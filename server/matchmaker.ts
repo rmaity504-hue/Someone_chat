@@ -121,6 +121,7 @@ export class Matchmaker {
       joinedAt: Date.now(),
       isVolunteer: false,
     });
+    console.log(`[Matchmaker] User joined pool: ${userId}`);
 
     db.updateUser(userId, { status: 'matching' });
     this.sendToUser(userId, 'matching:state', { state: 'searching', message: "Finding someone who's available..." });
@@ -334,6 +335,8 @@ export class Matchmaker {
     this.userToRoom.set(user1Id, roomId);
     this.userToRoom.set(user2Id, roomId);
 
+    console.log(`[Matchmaker] Paired user ${user1Id} and user ${user2Id} into room: ${roomId}`);
+
     // Update status
     db.updateUser(user1Id, { status: 'matching' });
     db.updateUser(user2Id, { status: 'matching' });
@@ -347,6 +350,7 @@ export class Matchmaker {
       roomId,
       message: 'Someone is here.',
     });
+    console.log(`[Matchmaker] Match notification emitted to both sockets: user ${user1Id} and user ${user2Id} (room: ${roomId})`);
 
     // Auto-timeout after 35 seconds if either party doesn't connect
     setTimeout(() => {
@@ -405,6 +409,7 @@ export class Matchmaker {
         partnerId: session.user1Id,
         partnerDisplayName: session.user1Name,
       });
+      console.log(`[Matchmaker] Active session started, match notification emitted to both sockets: user ${session.user1Id} and user ${session.user2Id} (room: ${roomId})`);
     } else {
       // User is waiting for the other party to also hit Connect
       this.sendToUser(userId, 'match:waiting_partner', {

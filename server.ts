@@ -14,7 +14,7 @@ import { simulator } from './server/simulator.js';
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   // Cloud Run / Reverse Proxy header trust
   app.set('trust proxy', 1);
@@ -379,7 +379,7 @@ async function startServer() {
   }
 
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Someone server running on http://localhost:${PORT}`);
+    console.log(`Someone server running on http://0.0.0.0:${PORT}`);
     console.log(`[AUTH CONFIG] Email verification required: ${REQUIRE_EMAIL_VERIFICATION}`);
     simulator.ensureBotUser();
     // Run Nodemailer startup check to verify SMTP connection and credentials

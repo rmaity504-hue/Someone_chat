@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { UserProfile, ChatMessage, Friendship, AdminStats } from '../types.js';
+import { getWebSocketUrl } from '../services/socket.js';
 
 export interface VolunteerRequest {
   offerId: string;
@@ -191,8 +192,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         wsRef.current = null;
       }
 
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
+      const wsUrl = getWebSocketUrl(token);
 
       let ws: WebSocket;
       try {
