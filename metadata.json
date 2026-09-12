@@ -1,0 +1,6 @@
+{
+  "name": "Someone",
+  "description": "Connects adults from anywhere in the world who voluntarily make themselves available for a genuine text conversation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
