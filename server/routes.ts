@@ -4,8 +4,6 @@ import { db, hashPassword, verifyPassword } from './db.js';
 import { matchmaker } from './matchmaker.js';
 import {
   generateVerificationCode,
-  generateVerificationToken,
-  sendVerificationEmail,
   sendPasswordResetEmail,
   sendDiagnosticTestEmail,
 } from './email.js';
@@ -198,64 +196,15 @@ apiRouter.post(['/auth/register', '/register'], registrationLimiter, async (req:
     return;
   }
 
-  // Check if email verification is bypassed during development
-  if (!REQUIRE_EMAIL_VERIFICATION) {
-    // Automatically create the user with is_verified = true in PostgreSQL and memory
-    const user = db.createUser(cleanEmail, hashPassword(password), displayName.trim(), clientIp, true);
-    // Immediately issue an authenticated session token
-    const token = db.createSession(user.id);
-
-    res.json({
-      ok: true,
-      success: true,
-      user: db.toPublicProfile(user),
-      token,
-      bypassedVerification: true,
-    });
-    return;
-  }
-
-  // Create user with scrypt password hash (unverified)
-  const user = db.createUser(cleanEmail, hashPassword(password), displayName.trim(), clientIp, false);
-
-  // Generate cryptographically secure 6-digit fallback code and 24-hr verification token
-  const code = generateVerificationCode();
-  const verificationToken = generateVerificationToken();
-  db.setVerificationDetails(user.id, code, verificationToken, 15, 24);
-
-  // Construct one-click verification link
-  const baseUrl = getAppBaseUrl(req);
-  const verifyLink = `${baseUrl}/verify?token=${verificationToken}`;
-
-  // Dispatch real email via Nodemailer (with prominent Verify button and fallback code)
-  let emailResult;
-  try {
-    emailResult = await sendVerificationEmail(cleanEmail, code, verifyLink);
-  } catch (err: any) {
-    const errMsg = err?.message || 'SMTP delivery failure';
-    console.error(`[REGISTRATION ERROR] Email delivery failed for ${cleanEmail}:`, err?.code ? `[${err.code}]` : '', errMsg);
-    // Remove newly created unverified account so user is not stuck
-    db.deleteUnverifiedUser(user.id);
-    res.status(500).json({
-      ok: false,
-      error: 'Email delivery failed',
-      details: errMsg,
-    });
-    return;
-  }
-
-  // Create server-side session token
+  // Create user directly as active and verified (no 6-digit OTP or verification email required)
+  const user = db.createUser(cleanEmail, hashPassword(password), displayName.trim(), clientIp, true);
   const token = db.createSession(user.id);
 
   res.json({
     ok: true,
     success: true,
-    token,
     user: db.toPublicProfile(user),
-    verificationSent: true,
-    previewCode: emailResult.previewCode,
-    previewLink: emailResult.previewLink,
-    bypassedVerification: false,
+    token,
   });
 });
 
@@ -286,21 +235,9 @@ apiRouter.post(['/auth/login', '/login'], loginLimiter, (req: Request, res: Resp
     return;
   }
 
-  // Handle email verification requirements
-  if (REQUIRE_EMAIL_VERIFICATION) {
-    if (!user.isVerified) {
-      res.status(403).json({
-        error: 'Please verify your email address before logging in.',
-        unverified: true,
-        email: user.email,
-      });
-      return;
-    }
-  } else {
-    // If verification is not required, automatically update unverified accounts in PostgreSQL and memory
-    if (!user.isVerified) {
-      db.markUserVerified(user.id);
-    }
+  // Ensure user is marked verified immediately
+  if (!user.isVerified) {
+    db.markUserVerified(user.id);
   }
 
   const token = db.createSession(user.id);
@@ -315,93 +252,25 @@ apiRouter.post(['/auth/login', '/login'], loginLimiter, (req: Request, res: Resp
 
 apiRouter.get('/auth/me', authenticate, (req: Request, res: Response): void => {
   let user = (req as any).user;
-  if (!REQUIRE_EMAIL_VERIFICATION && !user.isVerified) {
+  if (!user.isVerified) {
     user = db.markUserVerified(user.id) || user;
   }
   res.json({ user: db.toPublicProfile(user) });
 });
 
-apiRouter.post(['/auth/verify-email', '/verify-email'], verificationLimiter, authenticate, (req: Request, res: Response): void => {
-  const user = (req as any).user;
-  const { code } = req.body;
-
-  if (!code || typeof code !== 'string') {
-    res.status(400).json({ error: 'Please enter the 6-digit verification code.' });
-    return;
-  }
-
-  const result = db.verifyEmailCode(user.id, code.trim());
-  if (!result.success) {
-    res.status(400).json({ error: result.error || 'Verification failed.' });
-    return;
-  }
-
-  const updated = db.getUserById(user.id);
-  res.json({ success: true, user: db.toPublicProfile(updated!) });
+// Legacy verification compatibility endpoints (always succeed without requiring OTP)
+apiRouter.post(['/auth/verify-email', '/verify-email'], (req: Request, res: Response): void => {
+  res.json({ success: true, message: 'Email verification is not required.' });
 });
 
-apiRouter.post('/auth/resend-verification', verificationLimiter, authenticate, async (req: Request, res: Response): Promise<void> => {
-  const user = (req as any).user;
-  if (user.isVerified) {
-    res.json({ success: true, message: 'Your email is already verified.' });
-    return;
-  }
-
-  const code = generateVerificationCode();
-  const verificationToken = generateVerificationToken();
-  db.setVerificationDetails(user.id, code, verificationToken, 15, 24);
-
-  const baseUrl = getAppBaseUrl(req);
-  const verifyLink = `${baseUrl}/verify?token=${verificationToken}`;
-  try {
-    const sendResult = await sendVerificationEmail(user.email, code, verifyLink);
-    res.json({
-      success: true,
-      message: 'A new verification link and code have been dispatched to your email.',
-      previewCode: sendResult.previewCode,
-      previewLink: sendResult.previewLink,
-    });
-  } catch (err: any) {
-    const errMsg = err?.message || 'SMTP delivery failure';
-    console.error(`[RESEND ERROR] Email delivery failed for ${user.email}:`, err?.code ? `[${err.code}]` : '', errMsg);
-    res.status(500).json({
-      error: 'Email delivery failed',
-      details: errMsg,
-    });
-  }
+apiRouter.post('/auth/resend-verification', (req: Request, res: Response): void => {
+  res.json({ success: true, message: 'Email verification is not required.' });
 });
 
 apiRouter.get(
   ['/auth/verify-email-link', '/auth/verify-link'],
-  async (req: Request, res: Response): Promise<void> => {
-    const rawToken = req.query.token;
-    if (!rawToken || typeof rawToken !== 'string') {
-      res.redirect('/?error=' + encodeURIComponent('Verification link is missing a valid token.'));
-      return;
-    }
-
-    const result = await db.verifyByToken(rawToken.trim());
-    if (!result.success || !result.user) {
-      res.redirect('/?error=' + encodeURIComponent(result.error || 'Verification link is invalid or has expired.'));
-      return;
-    }
-
-    // Issue an authenticated session
-    const sessionToken = db.createSession(result.user.id);
-
-    // If programmatic request explicitly accepting JSON
-    if (req.accepts('html', 'json') === 'json' && !req.headers['sec-fetch-dest']) {
-      res.json({
-        success: true,
-        message: 'Account verified successfully.',
-        token: sessionToken,
-        user: db.toPublicProfile(result.user),
-      });
-      return;
-    }
-
-    // Redirect user back to the main app screen as fully authenticated
-    res.redirect(`/?auth_token=${encodeURIComponent(sessionToken)}&verified=true`);
+  (req: Request, res: Response): void => {
+    res.redirect('/');
   }
 );
 

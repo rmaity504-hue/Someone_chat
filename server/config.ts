@@ -2,6 +2,7 @@ import 'dotenv/config';
 
 /**
  * Environment-based configuration flags
- * Default REQUIRE_EMAIL_VERIFICATION to false unless explicitly set to 'true'.
+ * Email verification is permanently disabled across the application.
  */
-export const REQUIRE_EMAIL_VERIFICATION = process.env.REQUIRE_EMAIL_VERIFICATION === 'true';
+export const REQUIRE_EMAIL_VERIFICATION = false;
+

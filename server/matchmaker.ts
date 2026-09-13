@@ -106,9 +106,6 @@ export class Matchmaker {
     const user = db.getUserById(userId);
     if (!user) return { success: false, message: 'User not found' };
 
-    if (!user.isVerified) {
-      return { success: false, message: 'Please verify your email first.' };
-    }
     if (!user.safetyAcknowledged) {
       return { success: false, message: 'Please review and acknowledge the safety notice.' };
     }

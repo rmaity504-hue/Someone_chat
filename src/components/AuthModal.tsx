@@ -7,15 +7,13 @@ import {
   User as UserIcon,
   AlertCircle,
   CheckCircle2,
-  RefreshCw,
   Eye,
   EyeOff,
   KeyRound,
   ArrowLeft,
-  ExternalLink,
 } from 'lucide-react';
 
-export type AuthModalMode = 'signin' | 'register' | 'verify' | 'forgot' | 'reset';
+export type AuthModalMode = 'signin' | 'register' | 'forgot' | 'reset';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -28,15 +26,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onClose,
   initialMode = 'signin',
 }) => {
-  const { user, login, verifyEmail, refreshUser } = useAuth();
+  const { login } = useAuth();
 
-  const [mode, setMode] = useState<AuthModalMode>(initialMode);
+  const [mode, setMode] = useState<AuthModalMode>(initialMode === ('verify' as any) ? 'signin' : initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [isAgeConfirmed, setIsAgeConfirmed] = useState(false);
-  const [verificationCode, setVerificationCode] = useState('');
 
   // Password reset flow states
   const [resetEmail, setResetEmail] = useState('');
@@ -48,42 +45,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [resending, setResending] = useState(false);
 
   useEffect(() => {
-    if (user && !user.isVerified && initialMode === 'verify') {
-      setMode('verify');
-    } else {
-      setMode(initialMode);
-    }
+    setMode(initialMode === ('verify' as any) ? 'signin' : initialMode);
     setError(null);
     setSuccessNotice(null);
     setShowPassword(false);
     setShowNewPassword(false);
-  }, [isOpen, user, initialMode]);
-
-  // Auto-close verification modal if account is verified (e.g. via link in another tab)
-  useEffect(() => {
-    if (user?.isVerified && mode === 'verify' && isOpen) {
-      onClose();
-    }
-  }, [user?.isVerified, mode, isOpen, onClose]);
-
-  // When on verify screen, periodically check user state and check on window focus
-  useEffect(() => {
-    if (!isOpen || mode !== 'verify') return;
-    const interval = setInterval(() => {
-      refreshUser();
-    }, 4000);
-    const onFocus = () => {
-      refreshUser();
-    };
-    window.addEventListener('focus', onFocus);
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener('focus', onFocus);
-    };
-  }, [isOpen, mode, refreshUser]);
+  }, [isOpen, initialMode]);
 
   if (!isOpen) return null;
 
@@ -115,17 +84,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }
 
       login(data.token, data.user);
-
-      if (data.bypassedVerification || data.user?.isVerified) {
-        onClose();
-      } else {
-        setMode('verify');
-        if (data.emailWarning) {
-          setSuccessNotice(data.emailWarning);
-        } else {
-          setSuccessNotice(`We sent a verification link to ${email}. Click the link to instantly verify your account, or enter the 6-digit fallback code below.`);
-        }
-      }
+      onClose();
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -151,67 +110,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }
 
       login(data.token, data.user);
-      if (data.user?.isVerified || data.bypassedVerification || !data.unverified) {
-        onClose();
-      } else {
-        setMode('verify');
-        setSuccessNotice('Please enter the verification code sent to your email.');
-      }
+      onClose();
     } catch (err: any) {
       setError(err.message);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleVerify = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setSuccessNotice(null);
-    setLoading(true);
-
-    try {
-      const success = await verifyEmail(verificationCode);
-      if (success) {
-        onClose();
-      } else {
-        setError('Incorrect verification code. Please check and try again.');
-      }
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleResendCode = async () => {
-    setError(null);
-    setSuccessNotice(null);
-    setResending(true);
-    try {
-      const token = localStorage.getItem('someone_token');
-      const res = await fetch('/api/auth/resend-verification', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to resend code');
-      }
-      if (data.isSandboxRestriction && data.previewLink) {
-        setSuccessNotice(`Resend sandbox notice: Deliveries go to rmaity504@gmail.com. Preview link: ${data.previewLink}`);
-      } else if (data.message) {
-        setSuccessNotice(data.message);
-      } else {
-        setSuccessNotice('A fresh verification link and fallback code have been dispatched to your email.');
-      }
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setResending(false);
     }
   };
 
@@ -318,14 +221,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <h2 className="font-serif text-2xl sm:text-3xl font-normal tracking-tight text-[#2D2723]">
               {mode === 'signin' && 'Sign in to Someone'}
               {mode === 'register' && 'Join Someone'}
-              {mode === 'verify' && 'Verify your email'}
               {mode === 'forgot' && 'Reset your password'}
               {mode === 'reset' && 'Set new password'}
             </h2>
             <p className="text-xs text-[#78716C] max-w-xs mx-auto leading-relaxed">
               {mode === 'signin' && 'Enter to find someone to talk to'}
               {mode === 'register' && 'Only email, password, and a display name are required'}
-              {mode === 'verify' && 'Required before entering the matching system'}
               {mode === 'forgot' && "Enter your email and we'll dispatch a 6-digit code"}
               {mode === 'reset' && 'Enter the 6-digit code and choose a new password'}
             </p>
@@ -344,72 +245,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <div className="p-3 bg-[#FAF0E6] border border-[#E7D7C5] text-[#7C2D12] text-xs rounded-2xl flex items-start gap-2">
               <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-[#C86D51]" />
               <span>{error}</span>
-            </div>
-          )}
-
-          {/* VERIFY EMAIL VIEW */}
-          {mode === 'verify' && (
-            <div className="space-y-4 pt-1">
-              {/* Friendly instruction banner */}
-              <div className="p-3.5 bg-[#F5F2EB] border border-[#E7E0D8] rounded-2xl text-xs text-[#5C534D] space-y-1.5">
-                <div className="flex items-center gap-1.5 font-medium text-[#2D2723]">
-                  <Mail className="w-4 h-4 text-[#C86D51] shrink-0" />
-                  <span>One-click verification sent</span>
-                </div>
-                <p className="leading-relaxed text-[#5C534D]">
-                  We sent a verification link to your email. Click the link to instantly verify your account, or enter the 6-digit fallback code below.
-                </p>
-              </div>
-
-              <form onSubmit={handleVerify} className="space-y-4">
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-[#5C534D]">
-                    6-digit Fallback Code
-                  </label>
-                  <input
-                    id="auth-verify-code-input"
-                    type="text"
-                    maxLength={6}
-                    placeholder="e.g. 123456"
-                    value={verificationCode}
-                    onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, ''))}
-                    className="w-full text-center tracking-widest text-2xl font-mono py-2.5 bg-[#FAF8F5] border border-[#D5CBC2] focus:border-[#C86D51] rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#C86D51]/20 text-[#2D2723]"
-                  />
-                </div>
-
-                <div className="flex items-center justify-between text-xs text-[#78716C] px-1">
-                  <span>Didn't receive the email?</span>
-                  <button
-                    type="button"
-                    onClick={handleResendCode}
-                    disabled={resending}
-                    className="text-[#C86D51] font-medium underline hover:text-[#B65E43] flex items-center gap-1 disabled:opacity-50 cursor-pointer"
-                  >
-                    <RefreshCw className={`w-3 h-3 ${resending ? 'animate-spin' : ''}`} />
-                    {resending ? 'Sending...' : 'Resend email'}
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  <button
-                    id="auth-verify-check-status-btn"
-                    type="button"
-                    onClick={() => refreshUser()}
-                    className="w-full py-2.5 bg-[#F5F2EB] border border-[#E7E0D8] text-[#2D2723] text-xs font-medium rounded-full hover:bg-[#EDE6DC] transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <CheckCircle2 className="w-3.5 h-3.5 text-[#2F5938]" />
-                    I clicked the link
-                  </button>
-                  <button
-                    id="auth-verify-submit-btn"
-                    type="submit"
-                    disabled={loading || verificationCode.length < 6}
-                    className="w-full py-2.5 bg-[#C86D51] hover:bg-[#B65E43] text-[#FAF8F5] text-xs font-medium rounded-full disabled:opacity-40 transition-all cursor-pointer shadow-2xs"
-                  >
-                    {loading ? 'Verifying...' : 'Submit code'}
-                  </button>
-                </div>
-              </form>
             </div>
           )}
 
@@ -782,7 +617,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 disabled={loading || !isAgeConfirmed}
                 className="w-full py-3.5 bg-[#C86D51] hover:bg-[#B65E43] text-[#FAF8F5] text-sm font-medium rounded-full disabled:opacity-40 transition-all mt-2 cursor-pointer shadow-2xs"
               >
-                {loading ? 'Creating account...' : 'Create account & verify'}
+                {loading ? 'Creating account...' : 'Create account'}
               </button>
 
               <div className="text-center pt-2">

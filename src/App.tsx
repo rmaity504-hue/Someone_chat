@@ -37,10 +37,6 @@ function MainApp() {
       setAuthModalOpen(true);
       return;
     }
-    if (!user.isVerified) {
-      setAuthModalOpen(true);
-      return;
-    }
     if (!user.safetyAcknowledged) {
       setSafetyModalOpen(true);
       return;

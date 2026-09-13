@@ -135,6 +135,11 @@ class Storage {
           bannedIps: parsed.bannedIps || {},
           conversationsCompletedCount: parsed.conversationsCompletedCount || 0,
         };
+
+        // Ensure all users are permanently verified
+        for (const u of Object.values(this.data.users)) {
+          u.isVerified = true;
+        }
       } catch (err) {
         console.error('Failed to parse local db.json:', err);
       }
@@ -227,7 +232,7 @@ class Storage {
           email: row.email,
           passwordHash: row.password_hash,
           displayName: row.display_name,
-          isVerified: row.is_verified,
+          isVerified: true,
           verificationCode: row.verification_code,
           verificationExpiresAt: row.verification_expires_at ? Number(row.verification_expires_at) : undefined,
           verificationAttempts: row.verification_attempts || 0,
@@ -485,7 +490,7 @@ class Storage {
     passwordHash: string,
     displayName: string,
     ipAddress?: string,
-    isVerified: boolean = false
+    isVerified: boolean = true
   ): PrivateUserRecord {
     const id = 'usr_' + crypto.randomBytes(8).toString('hex');
     const user: PrivateUserRecord = {
