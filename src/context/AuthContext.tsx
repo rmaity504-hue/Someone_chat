@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { UserProfile, ChatMessage, Friendship, AdminStats } from '../types.js';
-import { getWebSocketUrl } from '../services/socket.js';
+import { getWebSocketUrl, socketService } from '../services/socket.js';
 
 export interface VolunteerRequest {
   offerId: string;
@@ -12,6 +12,7 @@ export interface MatchingState {
   message?: string;
   offerId?: string;
   canStay?: boolean;
+  statusMessage?: string;
 }
 
 export interface ActiveSession {
@@ -87,8 +88,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [friendshipNotice, setFriendshipNotice] = useState<string | null>(null);
   const [systemNotification, setSystemNotification] = useState<string | null>(null);
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const heartbeatIntervalRef = useRef<any>(null);
+  const messagesRef = useRef<ChatMessage[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   const clearNotification = () => setSystemNotification(null);
 
@@ -156,237 +159,142 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => window.removeEventListener('storage', handleStorageChange);
   }, []);
 
-  // WebSocket Connection with automatic reconnection and heartbeat resilience
+  // Bind connection status directly to the singleton socket service
+  useEffect(() => {
+    const unsub = socketService.onStatusChange((status) => {
+      setWsConnected(status === 'connected');
+    });
+    return unsub;
+  }, []);
+
+  // Persistent WebSocket lifecycle and event subscriptions via singleton service
   useEffect(() => {
     if (!token || !user) {
-      if (wsRef.current) {
-        try {
-          wsRef.current.close(1000, 'User logged out');
-        } catch {
-          // ignore
-        }
-        wsRef.current = null;
-      }
-      setWsConnected(false);
+      socketService.disconnect('User logged out');
       return;
     }
 
-    let isMounted = true;
-    let reconnectTimer: any = null;
-    let reconnectAttempts = 0;
+    // Connect singleton socket (resilient across component re-mounts and route navigation)
+    socketService.connect(token);
 
-    const connect = () => {
-      if (!isMounted || !token) return;
+    const unsubAuthError = socketService.on('auth:error', () => {
+      localStorage.removeItem('someone_token');
+      setToken(null);
+      setUser(null);
+    });
 
-      // Close previous connection cleanly if still lingering
-      if (wsRef.current) {
-        try {
-          wsRef.current.onopen = null;
-          wsRef.current.onmessage = null;
-          wsRef.current.onclose = null;
-          wsRef.current.onerror = null;
-          wsRef.current.close();
-        } catch {
-          // ignore
-        }
-        wsRef.current = null;
+    const unsubAccountRestricted = socketService.on('account:restricted', (data) => {
+      if (data?.reason) {
+        setSystemNotification(data.reason);
       }
+    });
 
-      const wsUrl = getWebSocketUrl(token);
+    const unsubMatchingState = socketService.on('matching:state', (data) => {
+      setMatchingState(data);
+    });
 
-      let ws: WebSocket;
-      try {
-        ws = new WebSocket(wsUrl);
-      } catch (err) {
-        scheduleReconnect();
-        return;
+    const unsubMatchFound = socketService.on('match:found', (data) => {
+      setMatchingState({
+        state: 'searching',
+        message: data.message || 'Someone is here.',
+        offerId: data.roomId,
+      });
+    });
+
+    const unsubWaitingPartner = socketService.on('match:waiting_partner', (data) => {
+      setMatchingState((prev) => ({
+        ...prev,
+        statusMessage: data.message || 'Connecting to room... waiting for partner',
+      }));
+    });
+
+    const unsubMatchFailed = socketService.on('match:failed', (data) => {
+      setMatchingState({
+        state: 'idle',
+        statusMessage: data.message || 'Connection failed.',
+      });
+      setSystemNotification(data.message || 'Connection failed.');
+    });
+
+    const unsubVolunteerRequest = socketService.on('volunteer:request', (data) => {
+      setPendingVolunteerRequest(data);
+    });
+
+    const unsubSessionStart = socketService.on('session:start', (data) => {
+      setActiveSession({
+        roomId: data.roomId,
+        partnerId: data.partnerId,
+        partnerDisplayName: data.partnerDisplayName,
+        isSimulator: data.isSimulator,
+      });
+      setMessages([]);
+      setMatchingState({ state: 'idle' });
+      setPendingVolunteerRequest(null);
+    });
+
+    const unsubChatMessage = socketService.on('chat:message', (data) => {
+      setMessages((prev) => [...prev, data]);
+    });
+
+    const unsubChatBlocked = socketService.on('chat:blocked', (data) => {
+      setSystemNotification(data.message);
+    });
+
+    const unsubSessionEnded = socketService.on('session:ended', (data) => {
+      setActiveSession(null);
+      setMatchingState({ state: 'idle' });
+      const hadMessages = messagesRef.current.length > 0 || (data.messageCount && data.messageCount > 0);
+      if (data.safetyIntervention) {
+        setSystemNotification(data.reason || 'The conversation was ended due to a community safety guideline violation.');
+      } else if (data.promptFriendship && data.partnerId && hadMessages) {
+        setPostChatPartner({
+          partnerId: data.partnerId,
+          partnerDisplayName: data.partnerDisplayName,
+          roomId: data.roomId,
+          sessionSignature: data.sessionSignature,
+        });
+      } else {
+        // Chat was aborted before entering room, timed out, or had 0 messages sent -> No PostChatModal!
+        if (data.reason && data.reason !== 'Conversation ended' && data.reason !== 'Connection timed out.') {
+          setSystemNotification(data.reason);
+        }
       }
+    });
 
-      wsRef.current = ws;
+    const unsubSessionEnforcement = socketService.on('session:enforcement', (data) => {
+      setActiveSession(null);
+      setMatchingState({ state: 'idle' });
+      setMessages([]);
+      setSystemNotification(data.message);
+      if (user) {
+        setUser({
+          ...user,
+          status: data.status,
+          suspendedUntil: data.suspendedUntil,
+          restrictionReason: data.reason,
+        });
+      }
+      refreshUser();
+    });
 
-      ws.onopen = () => {
-        if (!isMounted) {
-          try {
-            ws.close();
-          } catch {
-            // ignore
-          }
-          return;
-        }
-        setWsConnected(true);
-        reconnectAttempts = 0;
-
-        // Authenticate immediately
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ event: 'auth', data: { token } }));
-        }
-
-        // Start heartbeat
-        if (heartbeatIntervalRef.current) {
-          clearInterval(heartbeatIntervalRef.current);
-        }
-        heartbeatIntervalRef.current = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ event: 'heartbeat' }));
-          }
-        }, 15000);
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          const { event: ev, data } = payload;
-
-          switch (ev) {
-            case 'auth:error':
-              // Invalid or expired token
-              localStorage.removeItem('someone_token');
-              setToken(null);
-              setUser(null);
-              break;
-
-            case 'account:restricted':
-              if (data?.reason) {
-                setSystemNotification(data.reason);
-              }
-              break;
-
-            case 'matching:state':
-              setMatchingState(data);
-              break;
-
-            case 'match:found':
-              setMatchingState({
-                state: 'searching',
-                message: data.message || 'Someone is here.',
-                offerId: data.roomId,
-              });
-              break;
-
-            case 'volunteer:request':
-              setPendingVolunteerRequest(data);
-              break;
-
-            case 'session:start':
-              setActiveSession({
-                roomId: data.roomId,
-                partnerId: data.partnerId,
-                partnerDisplayName: data.partnerDisplayName,
-                isSimulator: data.isSimulator,
-              });
-              setMessages([]);
-              setMatchingState({ state: 'idle' });
-              setPendingVolunteerRequest(null);
-              break;
-
-            case 'chat:message':
-              setMessages((prev) => [...prev, data]);
-              break;
-
-            case 'chat:blocked':
-              setSystemNotification(data.message);
-              break;
-
-            case 'session:ended':
-              setActiveSession(null);
-              setMatchingState({ state: 'idle' });
-              if (data.safetyIntervention) {
-                setSystemNotification(data.reason || 'The conversation was ended due to a community safety guideline violation.');
-              } else if (data.promptFriendship && data.partnerId) {
-                setPostChatPartner({
-                  partnerId: data.partnerId,
-                  partnerDisplayName: data.partnerDisplayName,
-                  roomId: data.roomId,
-                  sessionSignature: data.sessionSignature,
-                });
-              }
-              break;
-
-            case 'session:enforcement':
-              setActiveSession(null);
-              setMatchingState({ state: 'idle' });
-              setMessages([]);
-              setSystemNotification(data.message);
-              if (user) {
-                setUser({
-                  ...user,
-                  status: data.status,
-                  suspendedUntil: data.suspendedUntil,
-                  restrictionReason: data.reason,
-                });
-              }
-              refreshUser();
-              break;
-
-            case 'friendship:created':
-              setFriendshipNotice(data.message);
-              break;
-
-            case 'friendship:choice_recorded':
-              // Choice saved
-              break;
-
-            default:
-              break;
-          }
-        } catch (err) {
-          console.warn('Error parsing WS message:', err);
-        }
-      };
-
-      ws.onclose = (event) => {
-        setWsConnected(false);
-        if (heartbeatIntervalRef.current) {
-          clearInterval(heartbeatIntervalRef.current);
-          heartbeatIntervalRef.current = null;
-        }
-
-        // Only reconnect if not intentionally closed by logout (1000) or restricted (4003)
-        if (isMounted && event.code !== 1000 && event.code !== 4003) {
-          scheduleReconnect();
-        }
-      };
-
-      ws.onerror = () => {
-        // Handled cleanly via onclose and reconnect schedule.
-        // We avoid logging raw DOM Event objects to console.error.
-      };
-    };
-
-    const scheduleReconnect = () => {
-      if (!isMounted || !token) return;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts), 10000);
-      reconnectAttempts += 1;
-      reconnectTimer = setTimeout(() => {
-        if (isMounted) {
-          connect();
-        }
-      }, delay);
-    };
-
-    connect();
+    const unsubFriendshipCreated = socketService.on('friendship:created', (data) => {
+      setFriendshipNotice(data.message);
+    });
 
     return () => {
-      isMounted = false;
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-      }
-      if (heartbeatIntervalRef.current) {
-        clearInterval(heartbeatIntervalRef.current);
-      }
-      if (wsRef.current) {
-        try {
-          wsRef.current.onopen = null;
-          wsRef.current.onmessage = null;
-          wsRef.current.onclose = null;
-          wsRef.current.onerror = null;
-          wsRef.current.close(1000, 'Component unmounted');
-        } catch {
-          // ignore
-        }
-        wsRef.current = null;
-      }
+      unsubAuthError();
+      unsubAccountRestricted();
+      unsubMatchingState();
+      unsubMatchFound();
+      unsubWaitingPartner();
+      unsubMatchFailed();
+      unsubVolunteerRequest();
+      unsubSessionStart();
+      unsubChatMessage();
+      unsubChatBlocked();
+      unsubSessionEnded();
+      unsubSessionEnforcement();
+      unsubFriendshipCreated();
     };
   }, [token, user?.id, refreshUser]);
 
@@ -403,6 +311,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         headers: { Authorization: `Bearer ${token}` },
       }).catch(() => {});
     }
+    socketService.disconnect('User logged out');
     localStorage.removeItem('someone_token');
     setToken(null);
     setUser(null);
@@ -411,68 +320,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const enterMatching = () => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ event: 'matching:enter' }));
-    } else if (token) {
-      fetch('/api/matching/start', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-    }
+    socketService.send('matching:enter');
     setMatchingState({ state: 'searching', message: "Finding someone who's available..." });
   };
 
   const leaveMatching = () => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ event: 'matching:leave' }));
-    } else if (token) {
-      fetch('/api/matching/leave', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-    }
+    socketService.send('matching:leave');
     setMatchingState({ state: 'idle' });
   };
 
   const acceptMatch = (roomId: string) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ event: 'match:accept', data: { roomId } }));
-    }
+    setMatchingState((prev) => ({
+      ...prev,
+      statusMessage: 'Connecting to room...',
+    }));
+    socketService.send('accept_match', { roomId });
+    socketService.send('match:accept', { roomId });
   };
 
   const respondToVolunteer = (offerId: string, action: 'connect' | 'not_now') => {
     setPendingVolunteerRequest(null);
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ event: 'volunteer:respond', data: { offerId, action } }));
-    }
+    socketService.send('volunteer:respond', { offerId, action });
   };
 
   const sendMessage = (text: string) => {
     if (!activeSession || !text.trim()) return;
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          event: 'chat:send',
-          data: {
-            roomId: activeSession.roomId,
-            text: text.trim(),
-          },
-        })
-      );
-    }
+    socketService.send('chat:send', {
+      roomId: activeSession.roomId,
+      text: text.trim(),
+    });
   };
 
   const disconnectChat = () => {
     if (!activeSession) return;
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          event: 'chat:disconnect',
-          data: { roomId: activeSession.roomId },
-        })
-      );
-    }
+    socketService.send('chat:disconnect', { roomId: activeSession.roomId });
     setActiveSession(null);
+    setMatchingState({ state: 'idle' });
   };
 
   const submitFriendshipChoice = (
@@ -483,33 +366,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   ) => {
     const validRoomId = roomId || postChatPartner?.roomId;
     const validSignature = sessionSignature || postChatPartner?.sessionSignature;
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          event: 'friendship:choice',
-          data: {
-            partnerId,
-            wantsToTalkAgain: choice,
-            roomId: validRoomId,
-            sessionSignature: validSignature,
-          },
-        })
-      );
-    } else if (token && validRoomId && validSignature) {
-      fetch('/api/post-chat/choice', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          sessionId: validRoomId,
-          partnerId,
-          choice,
-          sessionSignature: validSignature,
-        }),
-      }).catch(console.error);
-    }
+    socketService.send('friendship:choice', {
+      partnerId,
+      wantsToTalkAgain: choice,
+      roomId: validRoomId,
+      sessionSignature: validSignature,
+    });
   };
 
   const clearPostChat = () => {
@@ -646,9 +508,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: false, error: data.error || 'Failed to delete account' };
       }
 
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
+      socketService.disconnect('Account deleted');
       localStorage.removeItem('someone_token');
       setToken(null);
       setUser(null);
@@ -665,8 +525,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const matchWithCompanion = async (): Promise<boolean> => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ event: 'simulator:match' }));
+    if (socketService.isConnected()) {
+      socketService.send('simulator:match');
       return true;
     }
     if (token) {
@@ -686,13 +546,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const simulateCompanionAction = async (action: 'violation' | 'clean_chat'): Promise<boolean> => {
     if (!activeSession) return false;
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          event: 'simulator:action',
-          data: { roomId: activeSession.roomId, action },
-        })
-      );
+    if (socketService.isConnected()) {
+      socketService.send('simulator:action', { roomId: activeSession.roomId, action });
       return true;
     }
     if (token) {

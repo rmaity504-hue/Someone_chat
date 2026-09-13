@@ -10,6 +10,7 @@ export interface MatchingViewProps {
 export const MatchingView: React.FC<MatchingViewProps> = ({ onCancel }) => {
   const { user, matchingState, acceptMatch, enterMatching, leaveMatching, matchWithCompanion } = useAuth();
   const [connectingCompanion, setConnectingCompanion] = useState(false);
+  const [connecting, setConnecting] = useState(false);
 
   // Only allow test companion simulator in local development (import.meta.env.DEV) or for authenticated administrators
   const isDevOrAdmin = Boolean(import.meta.env.DEV || user?.role === 'admin' || user?.isAdmin);
@@ -25,15 +26,18 @@ export const MatchingView: React.FC<MatchingViewProps> = ({ onCancel }) => {
 
   const handleConnect = () => {
     if (matchingState.offerId) {
+      setConnecting(true);
       acceptMatch(matchingState.offerId);
     }
   };
 
   const handleStay = () => {
+    setConnecting(false);
     enterMatching();
   };
 
   const handleLeave = () => {
+    setConnecting(false);
     leaveMatching();
     onCancel();
   };
@@ -121,13 +125,22 @@ export const MatchingView: React.FC<MatchingViewProps> = ({ onCancel }) => {
               </p>
             </div>
 
+            {matchingState.statusMessage && (
+              <div className="flex items-center justify-center gap-2 text-xs text-[#C86D51] font-medium bg-[#FAF0EB] py-1.5 px-3 rounded-full mx-auto max-w-xs">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>{matchingState.statusMessage}</span>
+              </div>
+            )}
+
             <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
               <button
                 id="matching-connect-btn"
                 onClick={handleConnect}
-                className="w-full sm:w-auto px-8 py-3.5 bg-[#C86D51] hover:bg-[#B65E43] text-[#FAF8F5] font-medium text-sm sm:text-base rounded-full shadow-[0_4px_20px_-2px_rgba(200,109,81,0.28)] hover:shadow-[0_6px_24px_-2px_rgba(200,109,81,0.38)] transition-all cursor-pointer"
+                disabled={connecting}
+                className="w-full sm:w-auto px-8 py-3.5 bg-[#C86D51] hover:bg-[#B65E43] disabled:opacity-60 text-[#FAF8F5] font-medium text-sm sm:text-base rounded-full shadow-[0_4px_20px_-2px_rgba(200,109,81,0.28)] hover:shadow-[0_6px_24px_-2px_rgba(200,109,81,0.38)] transition-all cursor-pointer flex items-center justify-center gap-2"
               >
-                Connect
+                {connecting && <Loader2 className="w-4 h-4 animate-spin text-[#FAF8F5]" />}
+                <span>{connecting ? 'Connecting...' : 'Connect'}</span>
               </button>
               <button
                 id="matching-decline-btn"
@@ -159,13 +172,22 @@ export const MatchingView: React.FC<MatchingViewProps> = ({ onCancel }) => {
               </p>
             </div>
 
+            {matchingState.statusMessage && (
+              <div className="flex items-center justify-center gap-2 text-xs text-[#C86D51] font-medium bg-[#FAF0EB] py-1.5 px-3 rounded-full mx-auto max-w-xs">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>{matchingState.statusMessage}</span>
+              </div>
+            )}
+
             <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
               <button
                 id="matching-volunteer-connect-btn"
                 onClick={handleConnect}
-                className="w-full sm:w-auto px-8 py-3.5 bg-[#C86D51] hover:bg-[#B65E43] text-[#FAF8F5] font-medium text-sm sm:text-base rounded-full shadow-[0_4px_20px_-2px_rgba(200,109,81,0.28)] hover:shadow-[0_6px_24px_-2px_rgba(200,109,81,0.38)] transition-all cursor-pointer"
+                disabled={connecting}
+                className="w-full sm:w-auto px-8 py-3.5 bg-[#C86D51] hover:bg-[#B65E43] disabled:opacity-60 text-[#FAF8F5] font-medium text-sm sm:text-base rounded-full shadow-[0_4px_20px_-2px_rgba(200,109,81,0.28)] hover:shadow-[0_6px_24px_-2px_rgba(200,109,81,0.38)] transition-all cursor-pointer flex items-center justify-center gap-2"
               >
-                Connect
+                {connecting && <Loader2 className="w-4 h-4 animate-spin text-[#FAF8F5]" />}
+                <span>{connecting ? 'Connecting...' : 'Connect'}</span>
               </button>
               <button
                 id="matching-volunteer-decline-btn"

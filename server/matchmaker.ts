@@ -46,7 +46,12 @@ export class Matchmaker {
     }
   }
 
-  unregisterClient(userId: string) {
+  unregisterClient(userId: string, closingWs?: WebSocket) {
+    const existing = this.clients.get(userId);
+    if (closingWs && existing && existing.ws !== closingWs) {
+      // A new socket connection has already been established by this user
+      return;
+    }
     this.clients.delete(userId);
     this.leaveMatching(userId);
     this.handleUserDisconnect(userId);
@@ -310,7 +315,7 @@ export class Matchmaker {
     }
   }
 
-  // Create a pending match where both see "Someone is here." with "Connect"
+  // Create a pending match where both see "Someone is here." with "Connect", or instant pair for queue users
   createPendingSession(user1Id: string, user2Id: string, isVolunteerMatch: boolean) {
     const user1 = db.getUserById(user1Id);
     const user2 = db.getUserById(user2Id);
@@ -328,6 +333,7 @@ export class Matchmaker {
       user2Connected: false,
       isVolunteerMatch,
       createdAt: Date.now(),
+      messageCount: 0,
       postChoices: {},
     };
 
@@ -337,11 +343,41 @@ export class Matchmaker {
 
     console.log(`[Matchmaker] Paired user ${user1Id} and user ${user2Id} into room: ${roomId}`);
 
-    // Update status
+    // If both users are already waiting in the pool (non-volunteer), instant pair directly into active chat!
+    if (!isVolunteerMatch) {
+      session.status = 'active';
+      session.user1Connected = true;
+      session.user2Connected = true;
+
+      db.updateUser(user1Id, { status: 'connected' });
+      db.updateUser(user2Id, { status: 'connected' });
+
+      // Track recent partner
+      const recent1 = [user2Id, ...(user1.recentPartnerIds || [])].slice(0, 5);
+      db.updateUser(user1Id, { recentPartnerIds: recent1 });
+      const recent2 = [user1Id, ...(user2.recentPartnerIds || [])].slice(0, 5);
+      db.updateUser(user2Id, { recentPartnerIds: recent2 });
+
+      this.sendToUser(user1Id, 'session:start', {
+        roomId,
+        partnerId: user2Id,
+        partnerDisplayName: user2.displayName,
+      });
+
+      this.sendToUser(user2Id, 'session:start', {
+        roomId,
+        partnerId: user1Id,
+        partnerDisplayName: user1.displayName,
+      });
+
+      console.log(`[Matchmaker] Instant pairing: user ${user1Id} and user ${user2Id} transitioned directly into active chat (room: ${roomId})`);
+      return;
+    }
+
+    // Otherwise, for volunteer fallback matches, show "Someone is here." with "Connect" button
     db.updateUser(user1Id, { status: 'matching' });
     db.updateUser(user2Id, { status: 'matching' });
 
-    // Show "Someone is here." with "Connect" button
     this.sendToUser(user1Id, 'match:found', {
       roomId,
       message: 'Someone is here.',
@@ -352,13 +388,15 @@ export class Matchmaker {
     });
     console.log(`[Matchmaker] Match notification emitted to both sockets: user ${user1Id} and user ${user2Id} (room: ${roomId})`);
 
-    // Auto-timeout after 35 seconds if either party doesn't connect
+    // Give users at least 25 seconds to accept before timing out
     setTimeout(() => {
       const sess = this.activeSessions.get(roomId);
       if (sess && sess.status === 'waiting_connect') {
+        this.sendToUser(user1Id, 'match:failed', { message: 'Connection timed out.' });
+        this.sendToUser(user2Id, 'match:failed', { message: 'Connection timed out.' });
         this.endSession(roomId, 'Connection timed out.');
       }
-    }, 35000);
+    }, 25000);
   }
 
   // User presses "Connect" on the "Someone is here" screen
@@ -370,7 +408,12 @@ export class Matchmaker {
     }
 
     const session = this.activeSessions.get(roomId);
-    if (!session || session.status !== 'waiting_connect') return;
+    if (!session || session.status !== 'waiting_connect') {
+      this.sendToUser(userId, 'match:failed', {
+        message: 'This conversation offer is no longer available.',
+      });
+      return;
+    }
 
     if (session.user1Id === userId) {
       session.user1Connected = true;
@@ -414,7 +457,7 @@ export class Matchmaker {
       // User is waiting for the other party to also hit Connect
       this.sendToUser(userId, 'match:waiting_partner', {
         roomId,
-        message: 'Connecting...',
+        message: 'Connecting to room... waiting for partner',
       });
     }
   }
@@ -433,6 +476,8 @@ export class Matchmaker {
 
     const sender = db.getUserById(senderId);
     if (!sender) return { success: false, error: 'User not found' };
+
+    session.messageCount = (session.messageCount || 0) + 1;
 
     const recipientId = session.user1Id === senderId ? session.user2Id : session.user1Id;
 
@@ -552,6 +597,7 @@ export class Matchmaker {
     const session = this.activeSessions.get(roomId);
     if (!session) return;
 
+    const hadActiveChat = session.status === 'active' && (session.messageCount || 0) > 0;
     session.status = 'ended';
     this.activeSessions.delete(roomId);
     this.userToRoom.delete(session.user1Id);
@@ -560,27 +606,47 @@ export class Matchmaker {
     db.updateUser(session.user1Id, { status: 'offline' });
     db.updateUser(session.user2Id, { status: 'offline' });
 
-    // Record verified completed conversation session in persistent database with server signature
-    const completedSession = db.recordCompletedSession(roomId, session.user1Id, session.user2Id, session.createdAt);
+    if (hadActiveChat) {
+      // Record verified completed conversation session in persistent database with server signature
+      const completedSession = db.recordCompletedSession(roomId, session.user1Id, session.user2Id, session.createdAt);
 
-    // Notify both users of disconnect, and prompt for mutual friendship with server signature
-    this.sendToUser(session.user1Id, 'session:ended', {
-      roomId,
-      partnerId: session.user2Id,
-      partnerDisplayName: session.user2Name,
-      reason,
-      promptFriendship: true,
-      sessionSignature: completedSession.serverSignature,
-    });
+      // Notify both users of disconnect, and prompt for mutual friendship with server signature
+      this.sendToUser(session.user1Id, 'session:ended', {
+        roomId,
+        partnerId: session.user2Id,
+        partnerDisplayName: session.user2Name,
+        reason,
+        promptFriendship: true,
+        messageCount: session.messageCount,
+        sessionSignature: completedSession.serverSignature,
+      });
 
-    this.sendToUser(session.user2Id, 'session:ended', {
-      roomId,
-      partnerId: session.user1Id,
-      partnerDisplayName: session.user1Name,
-      reason,
-      promptFriendship: true,
-      sessionSignature: completedSession.serverSignature,
-    });
+      this.sendToUser(session.user2Id, 'session:ended', {
+        roomId,
+        partnerId: session.user1Id,
+        partnerDisplayName: session.user1Name,
+        reason,
+        promptFriendship: true,
+        messageCount: session.messageCount,
+        sessionSignature: completedSession.serverSignature,
+      });
+    } else {
+      // Chat was aborted before entering room, timed out, or had 0 messages sent
+      this.sendToUser(session.user1Id, 'session:ended', {
+        roomId,
+        reason,
+        promptFriendship: false,
+        messageCount: 0,
+      });
+      this.sendToUser(session.user2Id, 'session:ended', {
+        roomId,
+        reason,
+        promptFriendship: false,
+        messageCount: 0,
+      });
+      this.sendToUser(session.user1Id, 'matching:state', { state: 'idle', message: reason });
+      this.sendToUser(session.user2Id, 'matching:state', { state: 'idle', message: reason });
+    }
   }
 
   // User submits choice on "Would you like to talk to this person again?"
@@ -635,6 +701,13 @@ export class Matchmaker {
   handleUserDisconnect(userId: string) {
     const roomId = this.userToRoom.get(userId);
     if (roomId) {
+      const session = this.activeSessions.get(roomId);
+      if (session && session.status === 'waiting_connect') {
+        const otherUserId = session.user1Id === userId ? session.user2Id : session.user1Id;
+        this.sendToUser(otherUserId, 'match:failed', {
+          message: 'Partner disconnected.',
+        });
+      }
       this.endSession(roomId, 'Partner disconnected.');
     }
   }

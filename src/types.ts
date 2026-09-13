@@ -106,6 +106,7 @@ export interface MatchSession {
   user2Connected: boolean;
   isVolunteerMatch: boolean;
   createdAt: number;
+  messageCount?: number;
   postChoices?: Record<string, boolean>; // userId -> want to talk again
 }
 

@@ -189,6 +189,7 @@ async function startServer() {
             break;
 
           case 'match:accept':
+          case 'accept_match':
             if (data?.roomId) {
               matchmaker.acceptMatch(currentUserId, data.roomId);
             }
@@ -354,7 +355,7 @@ async function startServer() {
 
     ws.on('close', () => {
       if (extWs.authenticatedUserId) {
-        matchmaker.unregisterClient(extWs.authenticatedUserId);
+        matchmaker.unregisterClient(extWs.authenticatedUserId, ws);
       }
     });
 

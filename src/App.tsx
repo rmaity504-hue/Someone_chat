@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { SocketProvider } from './context/SocketContext.js';
 import { AuthProvider, useAuth } from './context/AuthContext.js';
 import { Navbar } from './components/Navbar.js';
 import { HomeView } from './components/HomeView.js';
@@ -12,7 +13,7 @@ import { FriendsModal } from './components/FriendsModal.js';
 import { AdminDashboard } from './components/AdminDashboard.js';
 import { AppealModal } from './components/AppealModal.js';
 import { DeleteAccountModal } from './components/DeleteAccountModal.js';
-import { AlertOctagon } from 'lucide-react';
+import { AlertOctagon, AlertCircle, X } from 'lucide-react';
 
 function MainApp() {
   const {
@@ -20,6 +21,8 @@ function MainApp() {
     activeSession,
     matchingState,
     enterMatching,
+    systemNotification,
+    clearNotification,
   } = useAuth();
 
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -134,14 +137,39 @@ function MainApp() {
         isOpen={deleteAccountModalOpen}
         onClose={() => setDeleteAccountModalOpen(false)}
       />
+
+      {/* Diagnostic & Connection Notification Toast */}
+      {systemNotification && (
+        <aside
+          role="alert"
+          aria-live="polite"
+          className="fixed bottom-5 right-5 z-50 max-w-sm w-full bg-[#2D2723] text-[#FAF8F5] rounded-2xl p-4 shadow-xl border border-[#443C36] flex items-start justify-between gap-3 animate-fade-in"
+        >
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-5 h-5 text-[#E89578] shrink-0 mt-0.5" />
+            <p className="text-xs sm:text-sm text-[#E7E0D8] leading-relaxed">
+              {systemNotification}
+            </p>
+          </div>
+          <button
+            onClick={clearNotification}
+            className="text-[#A89F97] hover:text-[#FAF8F5] p-1 rounded-full transition-colors cursor-pointer"
+            aria-label="Dismiss notification"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </aside>
+      )}
     </div>
   );
 }
 
 export default function App() {
   return (
-    <AuthProvider>
-      <MainApp />
-    </AuthProvider>
+    <SocketProvider>
+      <AuthProvider>
+        <MainApp />
+      </AuthProvider>
+    </SocketProvider>
   );
 }
