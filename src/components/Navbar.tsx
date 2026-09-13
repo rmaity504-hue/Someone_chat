@@ -73,18 +73,19 @@ export const Navbar: React.FC<NavbarProps> = ({
       <div className="max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
         {/* Brand and primary desktop links */}
         <div className="flex items-center gap-6">
-          <a
-            href="#"
+          <button
+            type="button"
             id="brand-logo"
             onClick={(e) => {
               e.preventDefault();
+              e.stopPropagation();
               onChatNow?.();
             }}
             className="text-xl font-serif font-medium tracking-tight text-[#2D2723] hover:text-[#C86D51] flex items-center gap-2.5 transition-colors cursor-pointer"
           >
             <span className="w-2.5 h-2.5 rounded-full bg-[#C86D51] shadow-xs"></span>
             Someone
-          </a>
+          </button>
 
           {/* Minimalist Desktop Navigation */}
           <nav className="hidden md:flex items-center gap-5 text-xs text-[#5C534D]">

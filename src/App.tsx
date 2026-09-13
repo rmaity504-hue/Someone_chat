@@ -16,7 +16,9 @@ import { DeleteAccountModal } from './components/DeleteAccountModal.js';
 import { AccountSecurityModal } from './components/AccountSecurityModal.js';
 import { AboutPhilosophyModal } from './components/AboutPhilosophyModal.js';
 import { ContactAdminModal } from './components/ContactAdminModal.js';
-import { AlertOctagon, AlertCircle, X, MessageSquare } from 'lucide-react';
+import { InstallGuideModal } from './components/InstallGuideModal.js';
+import { InstallProvider, useInstall } from './context/InstallContext.js';
+import { AlertOctagon, AlertCircle, X, MessageSquare, Info } from 'lucide-react';
 
 function MainApp() {
   const {
@@ -27,6 +29,7 @@ function MainApp() {
     systemNotification,
     clearNotification,
   } = useAuth();
+  const { isInstallModalOpen, setIsInstallModalOpen, toastMessage } = useInstall();
 
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [safetyModalOpen, setSafetyModalOpen] = useState(false);
@@ -199,6 +202,22 @@ function MainApp() {
         onClose={() => setContactAdminOpen(false)}
       />
 
+      <InstallGuideModal
+        isOpen={isInstallModalOpen}
+        onClose={() => setIsInstallModalOpen(false)}
+      />
+
+      {/* PWA / Standalone Toast Notification */}
+      {toastMessage && (
+        <aside
+          role="status"
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] px-4 py-2.5 rounded-full bg-[#2D2723] text-[#FAF8F5] text-xs font-medium shadow-xl flex items-center gap-2 border border-[#453D37] animate-fade-in"
+        >
+          <Info className="w-4 h-4 text-[#E8C7BC] shrink-0" />
+          <span>{toastMessage}</span>
+        </aside>
+      )}
+
       {/* Diagnostic & Connection Notification Toast */}
       {systemNotification && (
         <aside
@@ -229,7 +248,9 @@ export default function App() {
   return (
     <SocketProvider>
       <AuthProvider>
-        <MainApp />
+        <InstallProvider>
+          <MainApp />
+        </InstallProvider>
       </AuthProvider>
     </SocketProvider>
   );
