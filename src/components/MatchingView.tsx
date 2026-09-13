@@ -5,9 +5,10 @@ import { Radio, HeartHandshake, UserX, Loader2, Bot } from 'lucide-react';
 
 export interface MatchingViewProps {
   onCancel: () => void;
+  topics?: string[];
 }
 
-export const MatchingView: React.FC<MatchingViewProps> = ({ onCancel }) => {
+export const MatchingView: React.FC<MatchingViewProps> = ({ onCancel, topics }) => {
   const { user, matchingState, acceptMatch, enterMatching, leaveMatching, matchWithCompanion } = useAuth();
   const [connectingCompanion, setConnectingCompanion] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -73,6 +74,19 @@ export const MatchingView: React.FC<MatchingViewProps> = ({ onCancel }) => {
               <p className="text-xs sm:text-sm text-[#78716C] max-w-xs mx-auto leading-relaxed">
                 Looking for another adult anywhere in the world who is ready for a genuine, unhurried conversation.
               </p>
+              {topics && topics.length > 0 && (
+                <div className="flex items-center justify-center gap-1.5 flex-wrap pt-2">
+                  <span className="text-xs text-[#8C827A]">Topics:</span>
+                  {topics.map((t) => (
+                    <span
+                      key={t}
+                      className="px-2.5 py-0.5 bg-[#FAF0EB] text-[#C86D51] text-xs font-medium rounded-full border border-[#E8C7BC]"
+                    >
+                      #{t}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="pt-4 flex flex-col items-center gap-3">

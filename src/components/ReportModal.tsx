@@ -14,49 +14,29 @@ interface ReportModalProps {
 
 const CATEGORIES: { label: string; value: ReportCategory; description: string }[] = [
   {
-    label: 'Sexual solicitation',
-    value: 'sexual_solicitation',
-    description: 'Requests for sexual acts, nudity, cybersex, or onlyfans',
-  },
-  {
-    label: 'Unwanted sexual content',
-    value: 'unwanted_sexual_content',
-    description: 'Explicit remarks, vulgar sexual advances, or lewd commentary',
-  },
-  {
-    label: 'Harassment or insults',
-    value: 'harassment',
-    description: 'Targeted hostility, degradation, or persistent insults',
-  },
-  {
-    label: 'Threats of violence or harm',
-    value: 'threats',
-    description: 'Physical threats, self-harm encouragement, or doxxing',
-  },
-  {
-    label: 'Coercion or manipulation',
-    value: 'coercion',
-    description: 'Blackmail, emotional extortion, or pressure',
-  },
-  {
-    label: 'Predatory behaviour',
-    value: 'predatory_behaviour',
-    description: 'Suspicious age inquiries or grooming patterns',
-  },
-  {
-    label: 'Scams or financial solicitation',
-    value: 'scams',
-    description: 'Asking for money, crypto, gifts, or off-platform schemes',
-  },
-  {
     label: 'Spam',
     value: 'spam',
-    description: 'Repeated promotional messages or automated dumping',
+    description: 'Repeated promotional messages, copy-pasting, or automated flooding',
   },
   {
-    label: 'Other policy violation',
+    label: 'Harassment',
+    value: 'harassment',
+    description: 'Targeted hostility, degradation, stalking, or persistent insults',
+  },
+  {
+    label: 'Inappropriate Content',
+    value: 'inappropriate_content',
+    description: 'Explicit sexual remarks, vulgar advances, lewd acts, or shocking content',
+  },
+  {
+    label: 'Off-platform solicitation',
+    value: 'off_platform_solicitation',
+    description: 'Sharing social handles, discord, phone numbers, or asking for money/crypto',
+  },
+  {
+    label: 'Other',
     value: 'other',
-    description: 'Other severe behavioural misconduct',
+    description: 'Other severe behavioural misconduct or rule violation',
   },
 ];
 

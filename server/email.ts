@@ -264,67 +264,10 @@ If you did not create an account on Someone, please ignore this email.`;
 }
 
 /**
- * Dispatch password reset email to user.
+ * Note: Password recovery uses secret security question & answer verification directly.
+ * Legacy email stub kept for backward interface compatibility only.
  */
-export async function sendPasswordResetEmail(email: string, code: string): Promise<EmailSendResult> {
-  const mailer = getEmailTransporter();
-  const subject = 'Your Someone Password Reset Code';
-  const textContent = `Hello,
-
-We received a request to reset your password on Someone.
-
-Your 6-digit password reset code is: ${code}
-
-This code will expire in 15 minutes. Once used, all existing active sessions will be terminated across all devices for your security.
-
-If you did not request a password reset, you can safely ignore this email — your account and credentials remain unchanged.`;
-
-  if (mailer) {
-    try {
-      const fromAddress = process.env.SMTP_FROM || process.env.EMAIL_FROM || '"Someone" <onboarding@resend.dev>';
-      const info = await mailer.sendMail({
-        from: fromAddress,
-        to: email,
-        subject,
-        text: textContent,
-      });
-
-      console.log(`[EMAIL DISPATCH] Password reset email sent to ${email} (Message ID: ${info.messageId})`);
-      return { success: true, messageId: info.messageId };
-    } catch (err: any) {
-      const errMsg = String(err?.message || '');
-      const isResendSandbox =
-        err?.responseCode === 550 ||
-        errMsg.includes('550') ||
-        errMsg.includes('You can only send testing emails') ||
-        errMsg.includes('resend.com/domains') ||
-        errMsg.includes('Invalid `to` field') ||
-        errMsg.includes('testing email address');
-
-      if (isResendSandbox) {
-        console.warn(
-          `[SMTP NOTICE] Resend sandbox restriction: Resend free tier delivers directly to rmaity504@gmail.com. (To: ${email})`
-        );
-        console.log(`[SANDBOX RESET CODE] To: ${email} | Reset Code: ${code}`);
-        return {
-          success: true,
-          isSandboxRestriction: true,
-          previewCode: code,
-          messageId: 'resend-sandbox-emulated',
-        };
-      }
-
-      console.error('[EMAIL ERROR] Failed to send password reset email via SMTP:', errMsg);
-      return { success: false, error: errMsg || 'SMTP delivery failure' };
-    }
-  }
-
-  // Fallback for local development when SMTP is not configured
-  if (process.env.NODE_ENV !== 'production') {
-    console.log(`\n========================================\n[DEV SMTP EMULATION]\nPassword Reset To: ${email}\nReset Code: ${code}\n(Expires in 15 minutes)\n========================================\n`);
-    return { success: true, previewCode: code };
-  } else {
-    console.warn(`[WARN] SMTP not configured. Unable to send password reset email to ${email}`);
-    return { success: false, error: 'SMTP mail service is not configured on this server.' };
-  }
+export async function sendPasswordResetEmail(email: string, _code?: string): Promise<EmailSendResult> {
+  console.log(`[PASSWORD RECOVERY] Recovery requested for ${email} via secret security question flow.`);
+  return { success: true };
 }

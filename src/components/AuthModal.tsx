@@ -11,7 +11,10 @@ import {
   EyeOff,
   KeyRound,
   ArrowLeft,
+  HelpCircle,
+  ShieldCheck,
 } from 'lucide-react';
+import { COMMON_SECURITY_QUESTIONS } from './AccountSecurityModal';
 
 export type AuthModalMode = 'signin' | 'register' | 'forgot' | 'reset';
 
@@ -28,20 +31,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 }) => {
   const { login } = useAuth();
 
-  const [mode, setMode] = useState<AuthModalMode>(initialMode === ('verify' as any) ? 'signin' : initialMode);
+  const [mode, setMode] = useState<AuthModalMode>(
+    initialMode === ('verify' as any) ? 'signin' : initialMode
+  );
+
+  // Common form fields
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [isAgeConfirmed, setIsAgeConfirmed] = useState(false);
 
-  // Password reset flow states
+  // Registration Security Question fields
+  const [regQuestionPreset, setRegQuestionPreset] = useState(COMMON_SECURITY_QUESTIONS[0]);
+  const [regCustomQuestion, setRegCustomQuestion] = useState('');
+  const [regSecurityAnswer, setRegSecurityAnswer] = useState('');
+  const [showRegAnswer, setShowRegAnswer] = useState(false);
+
+  // 2-Step Password Reset Flow states
   const [resetEmail, setResetEmail] = useState('');
-  const [resetCode, setResetCode] = useState('');
+  const [retrievedQuestion, setRetrievedQuestion] = useState('');
+  const [resetAnswer, setResetAnswer] = useState('');
+  const [showResetAnswer, setShowResetAnswer] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showNewPassword, setShowNewPassword] = useState(false);
 
+  // Status & Feedback states
   const [error, setError] = useState<string | null>(null);
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -52,6 +68,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setSuccessNotice(null);
     setShowPassword(false);
     setShowNewPassword(false);
+    setShowRegAnswer(false);
+    setShowResetAnswer(false);
   }, [isOpen, initialMode]);
 
   if (!isOpen) return null;
@@ -71,12 +89,36 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       return;
     }
 
+    const questionToSave =
+      regQuestionPreset === 'Custom question...'
+        ? regCustomQuestion.trim()
+        : regQuestionPreset;
+
+    if (!questionToSave || questionToSave.length < 3) {
+      setError('Please select or specify a security question.');
+      return;
+    }
+
+    if (!regSecurityAnswer || regSecurityAnswer.trim().length < 2) {
+      setError('Please provide an answer to your security question (at least 2 characters).');
+      return;
+    }
+
     setLoading(true);
     try {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, displayName, isAgeConfirmed }),
+        body: JSON.stringify({
+          email,
+          password,
+          displayName,
+          isAgeConfirmed,
+          security_question: questionToSave,
+          security_answer: regSecurityAnswer.trim(),
+          securityQuestion: questionToSave,
+          securityAnswer: regSecurityAnswer.trim(),
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -118,36 +160,36 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  const handleRequestPasswordReset = async (e: React.FormEvent) => {
+  // Step 1: User enters email and clicks Continue to retrieve security question
+  const handleRetrieveSecurityQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccessNotice(null);
 
     const targetEmail = resetEmail.trim() || email.trim();
     if (!targetEmail) {
-      setError('Please enter your email address.');
+      setError('Please enter your account email address.');
       return;
     }
 
     setLoading(true);
     try {
-      const res = await fetch('/api/auth/forgot-password', {
+      const res = await fetch('/api/auth/get-security-question', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: targetEmail }),
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Unable to process reset request.');
+        throw new Error(data.error || 'No security question configured for this account. Contact admin.');
       }
 
       setResetEmail(targetEmail);
+      setRetrievedQuestion(data.question);
+      setResetAnswer('');
+      setNewPassword('');
+      setConfirmPassword('');
       setMode('reset');
-      if (data.emailWarning) {
-        setSuccessNotice(data.emailWarning);
-      } else {
-        setSuccessNotice(data.message || 'If an account exists with that email, a 6-digit reset code has been sent.');
-      }
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -155,13 +197,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  const handleCompletePasswordReset = async (e: React.FormEvent) => {
+  // Step 2: User answers the security question and submits Verify & Update Password
+  const handleResetPasswordWithAnswer = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccessNotice(null);
 
-    if (resetCode.trim().length < 6) {
-      setError('Please enter the 6-digit reset code.');
+    if (!resetAnswer || resetAnswer.trim().length === 0) {
+      setError('Please provide the answer to your security question.');
       return;
     }
 
@@ -171,34 +214,41 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
 
     if (newPassword !== confirmPassword) {
-      setError('Passwords do not match. Please verify and re-enter.');
+      setError('Passwords do not match. Please re-enter them carefully.');
       return;
     }
 
     setLoading(true);
     try {
-      const res = await fetch('/api/auth/reset-password', {
+      const res = await fetch('/api/auth/reset-password-with-answer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: resetEmail.trim(),
-          code: resetCode.trim(),
+          answer: resetAnswer.trim(),
           newPassword,
+          security_answer: resetAnswer.trim(),
+          new_password: newPassword,
         }),
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to reset password.');
+        throw new Error(data.error || 'Failed to update password.');
       }
 
-      // Success: return to sign in view with confirmation
-      setEmail(resetEmail.trim());
-      setPassword('');
-      setResetCode('');
-      setNewPassword('');
-      setConfirmPassword('');
-      setMode('signin');
-      setSuccessNotice('Your password has been successfully reset! All prior sessions were signed out. Please sign in with your new password.');
+      // Backend verifies answer and logs user in immediately
+      if (data.token && data.user) {
+        login(data.token, data.user);
+        onClose();
+      } else {
+        setEmail(resetEmail.trim());
+        setPassword('');
+        setResetAnswer('');
+        setNewPassword('');
+        setConfirmPassword('');
+        setMode('signin');
+        setSuccessNotice('Your password has been successfully updated. Please sign in.');
+      }
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -213,22 +263,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           initial={{ opacity: 0, scale: 0.96 }}
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 0.96 }}
-          className="bg-[#FAF8F5] border border-[#E7E0D8] rounded-3xl max-w-md w-full p-6 sm:p-8 shadow-[0_12px_40px_rgba(45,39,35,0.15)] space-y-5 text-[#2D2723]"
+          className="bg-[#FAF8F5] border border-[#E7E0D8] rounded-3xl max-w-md w-full p-6 sm:p-8 shadow-[0_12px_40px_rgba(45,39,35,0.15)] space-y-4 text-[#2D2723] max-h-[90vh] overflow-y-auto"
           id="auth-modal"
         >
           {/* Header */}
-          <div className="text-center space-y-1.5">
+          <div className="text-center space-y-1">
             <h2 className="font-serif text-2xl sm:text-3xl font-normal tracking-tight text-[#2D2723]">
               {mode === 'signin' && 'Sign in to Someone'}
               {mode === 'register' && 'Join Someone'}
-              {mode === 'forgot' && 'Reset your password'}
-              {mode === 'reset' && 'Set new password'}
+              {mode === 'forgot' && 'Forgot Password'}
+              {mode === 'reset' && 'Reset Password'}
             </h2>
             <p className="text-xs text-[#78716C] max-w-xs mx-auto leading-relaxed">
-              {mode === 'signin' && 'Enter to find someone to talk to'}
-              {mode === 'register' && 'Only email, password, and a display name are required'}
-              {mode === 'forgot' && "Enter your email and we'll dispatch a 6-digit code"}
-              {mode === 'reset' && 'Enter the 6-digit code and choose a new password'}
+              {mode === 'signin' && 'Sign in to find a thoughtful conversation partner'}
+              {mode === 'register' && 'Create your account with a secret question for password recovery'}
+              {mode === 'forgot' && 'Enter your email address and click continue'}
+              {mode === 'reset' && 'Answer your security question and choose a new password'}
             </p>
           </div>
 
@@ -236,7 +286,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           {successNotice && (
             <div className="p-3 bg-[#EBF3ED] border border-[#C3D9C8] text-[#2F5938] text-xs rounded-2xl flex items-start gap-2">
               <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0 text-[#2F5938]" />
-              <span>{successNotice}</span>
+              <span className="leading-relaxed">{successNotice}</span>
             </div>
           )}
 
@@ -244,13 +294,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           {error && (
             <div className="p-3 bg-[#FAF0E6] border border-[#E7D7C5] text-[#7C2D12] text-xs rounded-2xl flex items-start gap-2">
               <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-[#C86D51]" />
-              <span>{error}</span>
+              <span className="leading-relaxed">{error}</span>
             </div>
           )}
 
-          {/* FORGOT PASSWORD: STEP 1 (REQUEST CODE) */}
+          {/* ============================================================ */}
+          {/* 1. FORGOT PASSWORD: STEP 1 (LOOKUP EMAIL & GET QUESTION) */}
+          {/* ============================================================ */}
           {mode === 'forgot' && (
-            <form onSubmit={handleRequestPasswordReset} className="space-y-3.5 pt-1">
+            <form onSubmit={handleRetrieveSecurityQuestion} className="space-y-3.5 pt-1">
               <div>
                 <label className="block text-xs font-medium text-[#5C534D] mb-1">
                   Account Email
@@ -270,6 +322,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     className="w-full pl-10 pr-3.5 py-2.5 bg-[#FAF8F5] border border-[#D5CBC2] focus:border-[#C86D51] rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-[#C86D51]/20 text-[#2D2723]"
                   />
                 </div>
+                <p className="text-[11px] text-[#8C827A] mt-1.5 leading-normal">
+                  We will look up the secret recovery question configured for this account.
+                </p>
               </div>
 
               <button
@@ -278,10 +333,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 disabled={loading}
                 className="w-full py-3 bg-[#C86D51] hover:bg-[#B65E43] text-[#FAF8F5] text-sm font-medium rounded-full disabled:opacity-50 transition-all mt-2 cursor-pointer shadow-2xs"
               >
-                {loading ? 'Sending reset code...' : 'Send reset code'}
+                {loading ? 'Continuing...' : 'Continue'}
               </button>
 
-              <div className="flex items-center justify-between text-xs text-[#78716C] pt-2 px-1">
+              <div className="flex items-center justify-center text-xs text-[#78716C] pt-2 px-1">
                 <button
                   type="button"
                   onClick={() => {
@@ -294,63 +349,54 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <ArrowLeft className="w-3 h-3" />
                   Back to Sign In
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMode('reset');
-                    setError(null);
-                  }}
-                  className="hover:text-[#2D2723] underline underline-offset-2 cursor-pointer"
-                >
-                  Already have a code?
-                </button>
               </div>
             </form>
           )}
 
-          {/* FORGOT PASSWORD: STEP 2 (VERIFY CODE & SET NEW PASSWORD) */}
+          {/* ============================================================ */}
+          {/* 2. FORGOT PASSWORD: STEP 2 (ANSWER QUESTION & NEW PASSWORD) */}
+          {/* ============================================================ */}
           {mode === 'reset' && (
-            <form onSubmit={handleCompletePasswordReset} className="space-y-3 pt-1">
-              <div>
-                <label className="block text-xs font-medium text-[#5C534D] mb-1">
-                  Account Email
-                </label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 text-[#8C827A] absolute left-3.5 top-3" />
-                  <input
-                    id="auth-reset-email-input"
-                    type="email"
-                    required
-                    value={resetEmail || email}
-                    onChange={(e) => {
-                      setResetEmail(e.target.value);
-                      setEmail(e.target.value);
-                    }}
-                    placeholder="your@email.com"
-                    className="w-full pl-10 pr-3.5 py-2.5 bg-[#FAF8F5] border border-[#D5CBC2] focus:border-[#C86D51] rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-[#C86D51]/20 text-[#2D2723]"
-                  />
+            <form onSubmit={handleResetPasswordWithAnswer} className="space-y-3.5 pt-1">
+              {/* Retrieved Security Question Card (read-only bold text) */}
+              <div className="p-3.5 bg-[#F4EFEA] border border-[#E2D8CE] rounded-2xl space-y-1">
+                <div className="flex items-center gap-1.5 text-[#8C827A] text-[11px] font-medium uppercase tracking-wider">
+                  <HelpCircle className="w-3.5 h-3.5 text-[#C86D51]" />
+                  <span>Security Question</span>
                 </div>
+                <p className="text-sm font-bold text-[#2D2723] leading-snug">
+                  {retrievedQuestion || 'Security question'}
+                </p>
               </div>
 
+              {/* Your Answer Input */}
               <div>
                 <label className="block text-xs font-medium text-[#5C534D] mb-1">
-                  6-Digit Reset Code
+                  Your Answer <span className="text-[11px] text-[#8C827A] font-normal">(case-insensitive)</span>
                 </label>
                 <div className="relative">
                   <KeyRound className="w-4 h-4 text-[#8C827A] absolute left-3.5 top-3" />
                   <input
-                    id="auth-reset-code-input"
-                    type="text"
-                    maxLength={6}
+                    id="auth-reset-answer-input"
+                    type={showResetAnswer ? 'text' : 'password'}
                     required
-                    placeholder="e.g. 123456"
-                    value={resetCode}
-                    onChange={(e) => setResetCode(e.target.value.replace(/\D/g, ''))}
-                    className="w-full pl-10 pr-3.5 py-2.5 text-center tracking-widest font-mono text-base bg-[#FAF8F5] border border-[#D5CBC2] focus:border-[#C86D51] rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#C86D51]/20 text-[#2D2723]"
+                    value={resetAnswer}
+                    onChange={(e) => setResetAnswer(e.target.value)}
+                    placeholder="Enter your answer"
+                    className="w-full pl-10 pr-10 py-2.5 bg-[#FAF8F5] border border-[#D5CBC2] focus:border-[#C86D51] rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-[#C86D51]/20 text-[#2D2723]"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowResetAnswer((prev) => !prev)}
+                    aria-label={showResetAnswer ? 'Hide answer' : 'Show answer'}
+                    className="absolute right-3.5 top-3 text-[#8C827A] hover:text-[#2D2723] focus:outline-none p-0.5 rounded cursor-pointer"
+                  >
+                    {showResetAnswer ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
               </div>
 
+              {/* New Password */}
               <div>
                 <label className="block text-xs font-medium text-[#5C534D] mb-1">
                   New Password (min. 8 characters)
@@ -378,6 +424,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </div>
               </div>
 
+              {/* Confirm New Password */}
               <div>
                 <label className="block text-xs font-medium text-[#5C534D] mb-1">
                   Confirm New Password
@@ -400,10 +447,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <button
                 id="auth-reset-submit-btn"
                 type="submit"
-                disabled={loading || resetCode.length < 6 || newPassword.length < 8}
+                disabled={loading || resetAnswer.trim().length === 0 || newPassword.length < 8}
                 className="w-full py-3 bg-[#C86D51] hover:bg-[#B65E43] text-[#FAF8F5] text-sm font-medium rounded-full disabled:opacity-40 transition-all mt-2 cursor-pointer shadow-2xs"
               >
-                {loading ? 'Updating password...' : 'Reset password & sign in'}
+                {loading ? 'Verifying...' : 'Verify & Update Password'}
               </button>
 
               <div className="flex items-center justify-between text-xs text-[#78716C] pt-2 px-1">
@@ -416,7 +463,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   className="hover:text-[#2D2723] underline underline-offset-2 flex items-center gap-1 cursor-pointer"
                 >
                   <ArrowLeft className="w-3 h-3" />
-                  Request new code
+                  Different email
                 </button>
                 <button
                   type="button"
@@ -433,7 +480,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </form>
           )}
 
-          {/* SIGN IN FORM */}
+          {/* ============================================================ */}
+          {/* 3. SIGN IN FORM */}
+          {/* ============================================================ */}
           {mode === 'signin' && (
             <form onSubmit={handleSignIn} className="space-y-3.5 pt-1">
               <div>
@@ -503,7 +552,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 id="auth-signin-submit-btn"
                 type="submit"
                 disabled={loading}
-                className="w-full py-3.5 bg-[#C86D51] hover:bg-[#B65E43] text-[#FAF8F5] text-sm font-medium rounded-full disabled:opacity-50 transition-all mt-2 cursor-pointer shadow-2xs"
+                className="w-full py-3 bg-[#C86D51] hover:bg-[#B65E43] text-[#FAF8F5] text-sm font-medium rounded-full disabled:opacity-50 transition-all mt-2 cursor-pointer shadow-2xs"
               >
                 {loading ? 'Signing in...' : 'Sign in'}
               </button>
@@ -524,7 +573,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </form>
           )}
 
-          {/* REGISTER FORM */}
+          {/* ============================================================ */}
+          {/* 4. REGISTER FORM (WITH SECURITY QUESTION & ANSWER) */}
+          {/* ============================================================ */}
           {mode === 'register' && (
             <form onSubmit={handleRegister} className="space-y-3 pt-1">
               <div>
@@ -578,7 +629,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
               <div>
                 <label className="block text-xs font-medium text-[#5C534D] mb-1">
-                  Display Name (what your conversation partner sees)
+                  Display Name (what your partner sees)
                 </label>
                 <div className="relative">
                   <UserIcon className="w-4 h-4 text-[#8C827A] absolute left-3.5 top-3" />
@@ -593,6 +644,81 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     placeholder="e.g. Jordan, River, Sam..."
                     className="w-full pl-10 pr-3.5 py-2.5 bg-[#FAF8F5] border border-[#D5CBC2] focus:border-[#C86D51] rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-[#C86D51]/20 text-[#2D2723]"
                   />
+                </div>
+              </div>
+
+              {/* Security Question Section */}
+              <div className="pt-1.5 border-t border-[#E7E0D8]/60 space-y-2.5">
+                <div className="flex items-center gap-1.5 text-[#8C827A]">
+                  <ShieldCheck className="w-3.5 h-3.5 text-[#C86D51]" />
+                  <span className="text-[11px] font-medium uppercase tracking-wider">
+                    Password Recovery Question
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-[#5C534D] mb-1">
+                    Security Question
+                  </label>
+                  <div className="relative">
+                    <HelpCircle className="w-4 h-4 text-[#8C827A] absolute left-3.5 top-3 pointer-events-none" />
+                    <select
+                      id="auth-register-question-select"
+                      value={regQuestionPreset}
+                      onChange={(e) => setRegQuestionPreset(e.target.value)}
+                      className="w-full pl-10 pr-8 py-2.5 bg-[#FAF8F5] border border-[#D5CBC2] focus:border-[#C86D51] rounded-2xl text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#C86D51]/20 text-[#2D2723] appearance-none cursor-pointer"
+                    >
+                      {COMMON_SECURITY_QUESTIONS.map((q) => (
+                        <option key={q} value={q}>
+                          {q}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {regQuestionPreset === 'Custom question...' && (
+                  <div>
+                    <label className="block text-xs font-medium text-[#5C534D] mb-1">
+                      Your Custom Question
+                    </label>
+                    <input
+                      id="auth-register-custom-question-input"
+                      type="text"
+                      required
+                      value={regCustomQuestion}
+                      onChange={(e) => setRegCustomQuestion(e.target.value)}
+                      placeholder="e.g. What was the name of your first concert?"
+                      className="w-full px-3.5 py-2.5 bg-[#FAF8F5] border border-[#D5CBC2] focus:border-[#C86D51] rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-[#C86D51]/20 text-[#2D2723]"
+                    />
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-medium text-[#5C534D] mb-1">
+                    Security Answer <span className="text-[11px] text-[#8C827A] font-normal">(required, case-insensitive)</span>
+                  </label>
+                  <div className="relative">
+                    <KeyRound className="w-4 h-4 text-[#8C827A] absolute left-3.5 top-3" />
+                    <input
+                      id="auth-register-answer-input"
+                      type={showRegAnswer ? 'text' : 'password'}
+                      required
+                      minLength={2}
+                      value={regSecurityAnswer}
+                      onChange={(e) => setRegSecurityAnswer(e.target.value)}
+                      placeholder="Enter your security answer"
+                      className="w-full pl-10 pr-10 py-2.5 bg-[#FAF8F5] border border-[#D5CBC2] focus:border-[#C86D51] rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-[#C86D51]/20 text-[#2D2723]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowRegAnswer((prev) => !prev)}
+                      aria-label={showRegAnswer ? 'Hide answer' : 'Show answer'}
+                      className="absolute right-3.5 top-3 text-[#8C827A] hover:text-[#2D2723] focus:outline-none p-0.5 rounded cursor-pointer"
+                    >
+                      {showRegAnswer ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -614,13 +740,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <button
                 id="auth-register-submit-btn"
                 type="submit"
-                disabled={loading || !isAgeConfirmed}
+                disabled={loading || !isAgeConfirmed || regSecurityAnswer.trim().length < 2}
                 className="w-full py-3.5 bg-[#C86D51] hover:bg-[#B65E43] text-[#FAF8F5] text-sm font-medium rounded-full disabled:opacity-40 transition-all mt-2 cursor-pointer shadow-2xs"
               >
-                {loading ? 'Creating account...' : 'Create account'}
+                {loading ? 'Creating account...' : 'Create Account'}
               </button>
 
-              <div className="text-center pt-2">
+              <div className="text-center pt-1.5">
                 <button
                   type="button"
                   onClick={() => {
@@ -637,7 +763,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           )}
 
           {/* Close button */}
-          <div className="pt-2 text-center">
+          <div className="pt-1 text-center">
             <button
               id="auth-modal-close-btn"
               onClick={onClose}

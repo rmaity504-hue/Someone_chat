@@ -402,6 +402,26 @@
       "registeredIp": "49.37.2.116",
       "recentPartnerIds": [],
       "blockedUserIds": []
+    },
+    "usr_ebb992954edda981": {
+      "id": "usr_ebb992954edda981",
+      "email": "test_immediate_verify@example.com",
+      "passwordHash": "scrypt$N=16384,r=8,p=1$41fd34924420b5a7c6f92e749e6e0c6b$a1c881205e0e6e661a0a0983aa7262bd05cb86337b8d55440107a33990a10c86f9752471919ff20e2156c79a0313ff9d71b229ec6d74f5aeb6a9a3ad12ff6c77",
+      "displayName": "ImmediateTest",
+      "isVerified": true,
+      "verificationCode": null,
+      "verificationAttempts": 0,
+      "isAgeConfirmed": true,
+      "role": "user",
+      "status": "offline",
+      "safetyAcknowledged": false,
+      "isVolunteer": false,
+      "volunteerActive": false,
+      "createdAt": 1789291515027,
+      "violationCount": 0,
+      "registeredIp": "127.0.0.1",
+      "recentPartnerIds": [],
+      "blockedUserIds": []
     }
   },
   "sessions": {
@@ -524,6 +544,18 @@
       "userId": "usr_d3611675418385b4",
       "createdAt": 1789206512155,
       "expiresAt": 1789811312155
+    },
+    "bb0f1f1d2b1a2e0070020fcef6ec3a871a4d0359432f7072d167a33c0e660e96": {
+      "tokenHash": "bb0f1f1d2b1a2e0070020fcef6ec3a871a4d0359432f7072d167a33c0e660e96",
+      "userId": "usr_ebb992954edda981",
+      "createdAt": 1789291515027,
+      "expiresAt": 1789896315027
+    },
+    "baa13ff2c2f4aa415519ec687cce54e71bb283ccbe28fbfdd3641c6177077623": {
+      "tokenHash": "baa13ff2c2f4aa415519ec687cce54e71bb283ccbe28fbfdd3641c6177077623",
+      "userId": "usr_ebb992954edda981",
+      "createdAt": 1789291516528,
+      "expiresAt": 1789896316528
     }
   },
   "passwordResets": {
@@ -558,6 +590,14 @@
       "expiresAt": 1789291825141,
       "used": false,
       "createdAt": 1789290925141
+    },
+    "rst_4034f3eb9c7db7c5": {
+      "id": "rst_4034f3eb9c7db7c5",
+      "userId": "usr_a14aa686bbe6c0e2",
+      "tokenHash": "6a9f83a82cba02943018fc4dde8b44d55f3d0200b3033ae4d756c6f9fc2819b4",
+      "expiresAt": 1789294311530,
+      "used": false,
+      "createdAt": 1789293411530
     }
   },
   "friendships": {},

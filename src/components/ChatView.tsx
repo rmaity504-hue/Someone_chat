@@ -1,28 +1,51 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext.js';
-import { Send, LogOut, ShieldAlert, Ban, AlertCircle, Bot, Sparkles, AlertTriangle, Loader2 } from 'lucide-react';
+import {
+  Send,
+  LogOut,
+  ShieldAlert,
+  Ban,
+  AlertCircle,
+  Bot,
+  Sparkles,
+  AlertTriangle,
+  Loader2,
+  Volume2,
+  VolumeX,
+  SkipForward,
+} from 'lucide-react';
 import { ReportModal } from './ReportModal.js';
+import { useSoundMute } from '../utils/audioHaptics.js';
 
 export const ChatView: React.FC = () => {
   const {
     user,
     activeSession,
     messages,
+    isPartnerTyping,
     sendMessage,
     disconnectChat,
+    skipToNext,
+    sendTyping,
     blockUser,
     systemNotification,
     clearNotification,
     simulateCompanionAction,
   } = useAuth();
 
+  const { isMuted, toggleMute } = useSoundMute();
+
   const [input, setInput] = useState('');
   const [showReport, setShowReport] = useState(false);
   const [confirmBlock, setConfirmBlock] = useState(false);
   const [reminderDismissed, setReminderDismissed] = useState(false);
   const [simulatingAction, setSimulatingAction] = useState<string | null>(null);
+  const [containerHeight, setContainerHeight] = useState<string>('calc(100dvh - 4.25rem)');
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const lastTypingSentRef = useRef<number>(0);
+  const typingTimeoutRef = useRef<any>(null);
 
   const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
     messagesEndRef.current?.scrollIntoView({ behavior });
@@ -30,24 +53,45 @@ export const ChatView: React.FC = () => {
 
   useEffect(() => {
     scrollToBottom('smooth');
-  }, [messages]);
+  }, [messages, isPartnerTyping]);
 
-  // Mobile viewport layout handling for keyboard open/close states
+  // Mobile visualViewport layout handling: dynamically adjust container height so input remains pinned above the keyboard
   useEffect(() => {
     const handleViewportResize = () => {
-      // When mobile keyboard opens or closes, window.visualViewport height changes
-      scrollToBottom('auto');
+      if (window.visualViewport) {
+        const vv = window.visualViewport;
+        if (window.innerWidth < 640) {
+          // On mobile screens, bind container height to visualViewport.height minus header navigation
+          const navOffset = 56; // approximate mobile navbar height
+          setContainerHeight(`${Math.max(200, vv.height - navOffset)}px`);
+        } else {
+          setContainerHeight('84vh');
+        }
+        scrollToBottom('auto');
+      }
     };
 
+    handleViewportResize();
     const vv = window.visualViewport;
     if (vv) {
       vv.addEventListener('resize', handleViewportResize);
       vv.addEventListener('scroll', handleViewportResize);
+      window.addEventListener('resize', handleViewportResize);
       return () => {
         vv.removeEventListener('resize', handleViewportResize);
         vv.removeEventListener('scroll', handleViewportResize);
+        window.removeEventListener('resize', handleViewportResize);
       };
     }
+  }, []);
+
+  // Cleanup typing timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+    };
   }, []);
 
   if (!activeSession) return null;
@@ -59,9 +103,35 @@ export const ChatView: React.FC = () => {
   const isDevOrAdmin = Boolean(import.meta.env.DEV || user?.role === 'admin' || user?.isAdmin);
   const showSimulatorTools = isDevOrAdmin && isCompanion;
 
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setInput(val);
+
+    // Debounced typing indicator: emit user_typing (max once every 2s)
+    const now = Date.now();
+    if (val.trim()) {
+      if (now - lastTypingSentRef.current > 2000) {
+        sendTyping(true);
+        lastTypingSentRef.current = now;
+      }
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      // Stop typing indicator after 3 seconds of inactivity
+      typingTimeoutRef.current = setTimeout(() => {
+        sendTyping(false);
+      }, 3000);
+    } else {
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      sendTyping(false);
+    }
+  };
+
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim()) return;
+
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    sendTyping(false);
+
     sendMessage(input.trim());
     setInput('');
   };
@@ -83,23 +153,50 @@ export const ChatView: React.FC = () => {
   return (
     <div
       ref={chatContainerRef}
-      className="flex-1 flex flex-col w-full max-w-2xl mx-auto h-[calc(100dvh-4.25rem)] sm:h-[84vh] min-h-0 bg-[#FAF8F5] sm:border sm:border-[#E7E0D8] sm:rounded-3xl shadow-[0_10px_35px_-4px_rgba(45,39,35,0.06)] overflow-hidden"
+      style={{ height: containerHeight }}
+      className="flex-1 flex flex-col w-full max-w-2xl mx-auto min-h-0 bg-[#FAF8F5] sm:border sm:border-[#E7E0D8] sm:rounded-3xl shadow-[0_10px_35px_-4px_rgba(45,39,35,0.06)] overflow-hidden transition-[height] duration-75 ease-out"
       id="chat-view"
     >
       {/* Top Header */}
-      <div className="px-4 py-3 border-b border-[#E7E0D8] bg-[#FAF8F5]/90 backdrop-blur-md flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-          <div>
-            <h3 id="chat-partner-name" className="font-serif text-sm font-medium text-[#2D2723] tracking-tight">
-              {activeSession.partnerDisplayName}
-            </h3>
-            <span className="text-[11px] text-[#8C827A] block">Connected</span>
+      <div className="px-4 py-3 border-b border-[#E7E0D8] bg-[#FAF8F5]/90 backdrop-blur-md flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h3 id="chat-partner-name" className="font-serif text-sm font-medium text-[#2D2723] tracking-tight truncate">
+                {activeSession.partnerDisplayName}
+              </h3>
+              <span className="text-[11px] text-[#8C827A] hidden xs:inline">Connected</span>
+            </div>
+            {/* Shared Topic Badges */}
+            {activeSession.matchedTopics && activeSession.matchedTopics.length > 0 && (
+              <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+                {activeSession.matchedTopics.map((topic) => (
+                  <span
+                    key={topic}
+                    className="inline-flex items-center px-2 py-0.5 bg-[#FAF0EB] text-[#C86D51] text-[10px] font-medium rounded-full border border-[#E8C7BC]"
+                  >
+                    #{topic}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Safety & Disconnect controls */}
-        <div className="flex items-center gap-1.5">
+        {/* Action Controls: Sound Mute, Report, Block, Next, Disconnect */}
+        <div className="flex items-center gap-1 shrink-0">
+          {/* Audio Chimes Mute Toggle */}
+          <button
+            id="chat-sound-toggle-btn"
+            onClick={toggleMute}
+            className="p-2 text-[#8C827A] hover:text-[#2D2723] hover:bg-[#F2ECE4] rounded-full transition-colors cursor-pointer"
+            title={isMuted ? 'Sound muted (click to unmute)' : 'Sound enabled (click to mute)'}
+          >
+            {isMuted ? <VolumeX className="w-4 h-4 text-[#A84332]" /> : <Volume2 className="w-4 h-4 text-[#2F5938]" />}
+          </button>
+
+          {/* Report Button */}
           <button
             id="chat-report-btn"
             onClick={() => setShowReport(true)}
@@ -108,6 +205,8 @@ export const ChatView: React.FC = () => {
           >
             <ShieldAlert className="w-4 h-4" />
           </button>
+
+          {/* Block Button */}
           <button
             id="chat-block-btn"
             onClick={() => setConfirmBlock(true)}
@@ -116,13 +215,27 @@ export const ChatView: React.FC = () => {
           >
             <Ban className="w-4 h-4" />
           </button>
+
+          {/* Quick Next Match Button */}
+          <button
+            id="chat-next-btn"
+            onClick={() => skipToNext(activeSession.matchedTopics)}
+            className="flex items-center gap-1 px-3 py-1.5 bg-[#FAF8F5] hover:bg-[#EDE6DC] text-[#2D2723] text-xs font-medium rounded-full border border-[#E7E0D8] transition-all cursor-pointer shadow-2xs"
+            title="Skip to next conversation partner"
+          >
+            <SkipForward className="w-3.5 h-3.5 text-[#C86D51]" />
+            <span className="hidden sm:inline">Next</span>
+          </button>
+
+          {/* Disconnect Button */}
           <button
             id="chat-disconnect-btn"
             onClick={disconnectChat}
-            className="flex items-center gap-1.5 ml-1 px-3.5 py-1.5 bg-[#F5F2EB] hover:bg-[#EDE6DC] text-[#5C534D] hover:text-[#2D2723] text-xs font-medium rounded-full border border-[#E7E0D8] transition-all cursor-pointer shadow-2xs"
+            className="flex items-center gap-1.5 ml-0.5 px-3 py-1.5 bg-[#F5F2EB] hover:bg-[#EDE6DC] text-[#5C534D] hover:text-[#2D2723] text-xs font-medium rounded-full border border-[#E7E0D8] transition-all cursor-pointer shadow-2xs"
+            title="Leave this conversation"
           >
             <LogOut className="w-3.5 h-3.5" />
-            <span>Disconnect</span>
+            <span className="hidden sm:inline">Disconnect</span>
           </button>
         </div>
       </div>
@@ -171,7 +284,7 @@ export const ChatView: React.FC = () => {
         </div>
       )}
 
-      {/* System Warning Banner if safety filter triggered */}
+      {/* System Warning Banner if safety filter triggered or notification received */}
       {systemNotification && (
         <div className="p-3 bg-[#FAF0E6] border-b border-[#E7D7C5] text-[#7A3E26] text-xs flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -194,7 +307,7 @@ export const ChatView: React.FC = () => {
           className="px-3.5 py-2 bg-[#FAF2E8] border-b border-[#EADECF] text-[11px] text-[#7A3E26] flex items-center justify-between gap-2"
         >
           <p className="leading-snug">
-            <span className="font-semibold text-[#572714]">Please remember:</span> Someone is for genuine conversation, not sex chatting. Sexual solicitation or harassment can end the conversation and result in account suspension.
+            <span className="font-semibold text-[#572714]">Please remember:</span> Someone is for genuine conversation, not sex chatting. Off-platform solicitation or harassment ends the chat immediately.
           </p>
           <button
             onClick={() => setReminderDismissed(true)}
@@ -244,6 +357,23 @@ export const ChatView: React.FC = () => {
             );
           })
         )}
+
+        {/* Partner Typing Indicator */}
+        {isPartnerTyping && (
+          <div className="flex items-center gap-2 text-xs text-[#8C827A] px-1 py-1">
+            <div className="flex items-center gap-1.5 bg-[#F0EBE1] px-3 py-1.5 rounded-full border border-[#E7E0D8]/60 shadow-2xs">
+              <span className="text-[11px] text-[#5C534D] font-medium">
+                {activeSession.partnerDisplayName} is typing
+              </span>
+              <span className="flex gap-1 ml-0.5">
+                <span className="w-1.5 h-1.5 bg-[#8C827A] rounded-full animate-bounce [animation-delay:-0.3s]" />
+                <span className="w-1.5 h-1.5 bg-[#8C827A] rounded-full animate-bounce [animation-delay:-0.15s]" />
+                <span className="w-1.5 h-1.5 bg-[#8C827A] rounded-full animate-bounce" />
+              </span>
+            </div>
+          </div>
+        )}
+
         <div ref={messagesEndRef} />
       </div>
 
@@ -257,7 +387,7 @@ export const ChatView: React.FC = () => {
           id="chat-input"
           type="text"
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={handleInputChange}
           onFocus={() => {
             setTimeout(() => scrollToBottom('smooth'), 250);
           }}

@@ -345,3 +345,50 @@ export function evaluateMessageSafety(text: string, messageIndexInSession: numbe
     isLegitimateContext: false,
   };
 }
+
+/**
+ * Off-Platform Link / Handle Scrambler:
+ * Detects and masks off-platform links, social handles, discord/telegram invites,
+ * emails, and phone numbers to protect anonymity.
+ */
+export function sanitizeOffPlatformContent(text: string): { sanitized: string; wasModified: boolean } {
+  let wasModified = false;
+  const linkMask = '[link hidden for privacy]';
+
+  // 1. URLs (http://, https://, www., specific platforms)
+  const urlRegex = /(?:https?:\/\/[^\s]+|www\.[^\s]+|\b(?:discord\.(?:gg|com\/invite)|t\.me|telegram\.me|wa\.me|(?:instagram|snapchat|tiktok|twitter|x)\.com)\/[^\s]+|\b[a-zA-Z0-9-]+\.(?:com|org|net|io|me|gg|app|co|xyz|link|site|info|ru|cn|to|top|biz|tv|cc|ly)(?:\/[^\s]*)?\b)/gi;
+
+  // 2. Email addresses
+  const emailRegex = /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/gi;
+
+  // 3. Social media handles and platform cues (ig: name, snap: name, @username)
+  const handleRegex = /(?:\b(?:ig|insta|instagram|snap|snapchat|discord|tg|telegram|twitter|tiktok|wa|whatsapp|kik)\s*[:=]\s*@?[a-zA-Z0-9_.-]{3,}\b|@[a-zA-Z0-9_.]{3,}\b)/gi;
+
+  // 4. Phone numbers (e.g. +1 555-123-4567, (555) 123-4567, 555-123-4567)
+  const phoneRegex = /(?:\+?\d{1,3}[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b/g;
+
+  let sanitized = text;
+
+  if (urlRegex.test(sanitized)) {
+    wasModified = true;
+    sanitized = sanitized.replace(urlRegex, linkMask);
+  }
+
+  if (emailRegex.test(sanitized)) {
+    wasModified = true;
+    sanitized = sanitized.replace(emailRegex, linkMask);
+  }
+
+  if (handleRegex.test(sanitized)) {
+    wasModified = true;
+    sanitized = sanitized.replace(handleRegex, linkMask);
+  }
+
+  if (phoneRegex.test(sanitized)) {
+    wasModified = true;
+    sanitized = sanitized.replace(phoneRegex, linkMask);
+  }
+
+  return { sanitized, wasModified };
+}
+

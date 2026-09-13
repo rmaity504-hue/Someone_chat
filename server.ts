@@ -71,6 +71,9 @@ async function startServer() {
     });
   }, 30000);
 
+  // Volatile memory map for tracking message timestamps per user (burst rate-limiting)
+  const userMessageTimestamps: Map<string, number[]> = new Map();
+
   wss.on('close', () => {
     clearInterval(heartbeatInterval);
   });
@@ -177,7 +180,7 @@ async function startServer() {
             break;
 
           case 'matching:enter':
-            matchmaker.enterMatching(currentUserId);
+            matchmaker.enterMatching(currentUserId, Array.isArray(data?.topics) ? data.topics : []);
             break;
 
           case 'matching:leave':
@@ -205,6 +208,22 @@ async function startServer() {
             if (data?.roomId && typeof data?.text === 'string') {
               const text = data.text.trim();
               if (text.length === 0 || text.length > 2000) return;
+
+              // Burst Rate-Limiting: Track message timestamps per user in volatile memory.
+              // If a user sends >5 messages within 3 seconds, drop message and emit warning.
+              const nowTime = Date.now();
+              const userTimestamps = (userMessageTimestamps.get(currentUserId) || []).filter((t) => nowTime - t < 3000);
+              if (userTimestamps.length >= 5) {
+                ws.send(
+                  JSON.stringify({
+                    event: 'chat:warning',
+                    data: { message: 'You are sending messages too fast. Please slow down (max 5 messages per 3s).' },
+                  })
+                );
+                return;
+              }
+              userTimestamps.push(nowTime);
+              userMessageTimestamps.set(currentUserId, userTimestamps);
 
               // Verify sender is genuinely in this active room
               if (!matchmaker.isUserInRoom(currentUserId, data.roomId)) {
@@ -275,6 +294,18 @@ async function startServer() {
             }
             break;
 
+          case 'chat:next':
+          case 'chat:skip':
+            matchmaker.skipToNext(currentUserId, Array.isArray(data?.topics) ? data.topics : []);
+            break;
+
+          case 'user_typing':
+          case 'chat:typing':
+            if (data?.roomId && typeof data?.isTyping === 'boolean') {
+              matchmaker.handleTyping(currentUserId, data.roomId, data.isTyping);
+            }
+            break;
+
           case 'friendship:choice':
             if (data?.partnerId && typeof data?.wantsToTalkAgain === 'boolean') {
               matchmaker.submitFriendshipChoice(
@@ -297,6 +328,16 @@ async function startServer() {
                 data.roomId,
                 data.evidenceSnippet
               );
+              // Record moderation review flag
+              const reportedUser = db.getUserById(data.reportedUserId);
+              db.addFlag({
+                userId: data.reportedUserId,
+                displayName: reportedUser ? reportedUser.displayName : 'Unknown',
+                roomId: data.roomId,
+                triggerCategory: data.category,
+                flaggedText: `User Report (${data.category}): ${data.details}` + (data.evidenceSnippet ? ` [Snippet: ${data.evidenceSnippet}]` : ''),
+                severity: 'high',
+              });
               db.blockUser(currentUserId, data.reportedUserId);
               matchmaker.handleUserDisconnect(currentUserId);
               ws.send(JSON.stringify({ event: 'report:success' }));

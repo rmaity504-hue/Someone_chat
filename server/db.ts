@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import pg from 'pg';
+import bcrypt from 'bcryptjs';
 import {
   UserProfile,
   PrivateUserRecord,
@@ -56,6 +57,28 @@ export function generateToken(): string {
 
 export function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+export function normalizeSecurityAnswer(answer: string): string {
+  return (answer || '').trim().toLowerCase();
+}
+
+export function hashSecurityAnswer(answer: string): string {
+  const normalized = normalizeSecurityAnswer(answer);
+  return bcrypt.hashSync(normalized, 10);
+}
+
+export function verifySecurityAnswerHash(answer: string, storedHash: string): boolean {
+  if (!storedHash) return false;
+  const normalized = normalizeSecurityAnswer(answer);
+  if (storedHash.startsWith('$2a$') || storedHash.startsWith('$2b$') || storedHash.startsWith('$2y$')) {
+    try {
+      return bcrypt.compareSync(normalized, storedHash);
+    } catch {
+      return false;
+    }
+  }
+  return verifyPassword(normalized, storedHash);
 }
 
 import {
@@ -180,6 +203,8 @@ class Storage {
         ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token VARCHAR(128);
         ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token_expires_at BIGINT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS is_age_confirmed BOOLEAN DEFAULT FALSE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS security_question TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS security_answer_hash TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(32) DEFAULT 'user';
         ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'offline';
         ALTER TABLE users ADD COLUMN IF NOT EXISTS safety_acknowledged BOOLEAN DEFAULT FALSE;
@@ -239,6 +264,8 @@ class Storage {
           verificationToken: row.verification_token || undefined,
           verificationTokenExpiresAt: row.verification_token_expires_at ? Number(row.verification_token_expires_at) : undefined,
           isAgeConfirmed: row.is_age_confirmed,
+          securityQuestion: row.security_question || undefined,
+          securityAnswerHash: row.security_answer_hash || undefined,
           role: row.role,
           status: row.status,
           safetyAcknowledged: row.safety_acknowledged,
@@ -417,19 +444,18 @@ class Storage {
       await this.pgPool.query(
         `INSERT INTO users (
           id, email, password_hash, display_name, is_verified, verification_code,
-          verification_expires_at, verification_attempts, is_age_confirmed, role,
-          status, safety_acknowledged, is_volunteer, volunteer_active, created_at,
-          suspended_until, restriction_reason, violation_count, registered_ip,
-          recent_partner_ids, blocked_user_ids
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+          verification_expires_at, verification_attempts, is_age_confirmed, security_question,
+          security_answer_hash, role, status, safety_acknowledged, is_volunteer,
+          volunteer_active, created_at, suspended_until, restriction_reason, violation_count,
+          registered_ip, recent_partner_ids, blocked_user_ids
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
         ON CONFLICT (id) DO UPDATE SET
           email = EXCLUDED.email,
           password_hash = EXCLUDED.password_hash,
           display_name = EXCLUDED.display_name,
           is_verified = EXCLUDED.is_verified,
-          verification_code = EXCLUDED.verification_code,
-          verification_expires_at = EXCLUDED.verification_expires_at,
-          verification_attempts = EXCLUDED.verification_attempts,
+          security_question = EXCLUDED.security_question,
+          security_answer_hash = EXCLUDED.security_answer_hash,
           status = EXCLUDED.status,
           suspended_until = EXCLUDED.suspended_until,
           restriction_reason = EXCLUDED.restriction_reason,
@@ -446,6 +472,8 @@ class Storage {
           user.verificationExpiresAt || null,
           user.verificationAttempts || 0,
           user.isAgeConfirmed,
+          user.securityQuestion || null,
+          user.securityAnswerHash || null,
           user.role,
           user.status,
           user.safetyAcknowledged,
@@ -490,7 +518,9 @@ class Storage {
     passwordHash: string,
     displayName: string,
     ipAddress?: string,
-    isVerified: boolean = true
+    isVerified: boolean = true,
+    securityQuestion?: string,
+    securityAnswerHash?: string
   ): PrivateUserRecord {
     const id = 'usr_' + crypto.randomBytes(8).toString('hex');
     const user: PrivateUserRecord = {
@@ -499,6 +529,8 @@ class Storage {
       passwordHash,
       displayName: displayName.trim(),
       isVerified,
+      securityQuestion: securityQuestion?.trim(),
+      securityAnswerHash,
       isAgeConfirmed: true,
       role: 'user',
       status: 'offline',
@@ -516,9 +548,12 @@ class Storage {
       this.pgPool
         .query(
           `INSERT INTO users (
-            id, email, password_hash, display_name, is_verified, is_age_confirmed, role, status, safety_acknowledged, is_volunteer, volunteer_active, created_at, registered_ip
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-          ON CONFLICT (id) DO UPDATE SET is_verified = EXCLUDED.is_verified`,
+            id, email, password_hash, display_name, is_verified, is_age_confirmed, security_question, security_answer_hash, role, status, safety_acknowledged, is_volunteer, volunteer_active, created_at, registered_ip
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+          ON CONFLICT (id) DO UPDATE SET
+            is_verified = EXCLUDED.is_verified,
+            security_question = EXCLUDED.security_question,
+            security_answer_hash = EXCLUDED.security_answer_hash`,
           [
             id,
             user.email,
@@ -526,6 +561,8 @@ class Storage {
             user.displayName,
             user.isVerified,
             user.isAgeConfirmed,
+            user.securityQuestion || null,
+            user.securityAnswerHash || null,
             user.role,
             user.status,
             user.safetyAcknowledged,
@@ -562,6 +599,34 @@ class Storage {
     return user;
   }
 
+  async setSecurityQuestion(userId: string, question: string, answerHash: string): Promise<boolean> {
+    const user = this.data.users[userId];
+    if (!user) return false;
+
+    user.securityQuestion = question.trim();
+    user.securityAnswerHash = answerHash;
+
+    if (this.pgPool) {
+      try {
+        await this.pgPool.query(
+          'UPDATE users SET security_question = $1, security_answer_hash = $2 WHERE id = $3',
+          [question.trim(), answerHash, userId]
+        );
+      } catch (err: any) {
+        console.error('[DATABASE] Error updating security question in PostgreSQL:', err?.message || err);
+      }
+    }
+
+    this.scheduleSave();
+    return true;
+  }
+
+  verifyUserSecurityAnswer(userId: string, answer: string): boolean {
+    const user = this.data.users[userId];
+    if (!user || !user.securityAnswerHash) return false;
+    return verifySecurityAnswerHash(answer, user.securityAnswerHash);
+  }
+
   toPublicProfile(user: PrivateUserRecord): UserProfile {
     return {
       id: user.id,
@@ -577,6 +642,8 @@ class Storage {
       restrictionReason: user.restrictionReason,
       suspendedUntil: user.suspendedUntil,
       violationCount: user.violationCount,
+      securityQuestion: user.securityQuestion,
+      hasSecurityQuestion: !!(user.securityQuestion && user.securityAnswerHash),
     };
   }
 
@@ -839,16 +906,16 @@ class Storage {
         );
 
         if (res.rows.length === 0) {
-          return { success: false, error: 'Invalid or expired 6-digit reset code.' };
+          return { success: false, error: 'Invalid or expired reset token.' };
         }
 
         const row = res.rows[0];
         if (row.used) {
-          return { success: false, error: 'This reset code has already been used. Please request a new code.' };
+          return { success: false, error: 'This recovery request has already been used.' };
         }
 
         if (Number(row.expires_at) < now) {
-          return { success: false, error: 'This reset code has expired. Please request a new code.' };
+          return { success: false, error: 'This recovery request has expired.' };
         }
 
         // Mark as used immediately to prevent replay attacks
@@ -869,15 +936,15 @@ class Storage {
       .sort((a, b) => b.createdAt - a.createdAt)[0];
 
     if (!matching) {
-      return { success: false, error: 'Invalid or expired 6-digit reset code.' };
+      return { success: false, error: 'Invalid or expired reset token.' };
     }
 
     if (matching.used) {
-      return { success: false, error: 'This reset code has already been used. Please request a new code.' };
+      return { success: false, error: 'This recovery request has already been used.' };
     }
 
     if (now > matching.expiresAt) {
-      return { success: false, error: 'This reset code has expired. Please request a new code.' };
+      return { success: false, error: 'This recovery request has expired.' };
     }
 
     matching.used = true;

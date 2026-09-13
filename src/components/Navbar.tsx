@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext.js';
-import { Users, Shield, Radio, LogOut, Trash2, ChevronDown, User } from 'lucide-react';
+import { Users, Shield, Radio, LogOut, Trash2, ChevronDown, User, ShieldCheck } from 'lucide-react';
 
 interface NavbarProps {
   onOpenAuth: () => void;
@@ -8,6 +8,7 @@ interface NavbarProps {
   onOpenAdmin: () => void;
   onOpenSafety: () => void;
   onOpenDeleteAccount: () => void;
+  onOpenSecurity?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -16,6 +17,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenAdmin,
   onOpenSafety,
   onOpenDeleteAccount,
+  onOpenSecurity,
 }) => {
   const { user, logout, toggleVolunteer } = useAuth();
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
@@ -127,15 +129,29 @@ export const Navbar: React.FC<NavbarProps> = ({
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#F3EFEA] text-[#78716C] border border-[#E7E0D8]">
                           {user.role}
                         </span>
-                        {user.isVerified && (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#EBF3ED] text-[#2F5938] border border-[#C3D9C8]">
-                            Verified
-                          </span>
-                        )}
                       </div>
                     </div>
 
                     <div className="py-1">
+                      <button
+                        id="nav-security-question-btn"
+                        onClick={() => {
+                          setProfileMenuOpen(false);
+                          onOpenSecurity?.();
+                        }}
+                        className="w-full text-left px-4 py-2.5 text-xs text-[#5C534D] hover:text-[#2D2723] hover:bg-[#F3EFEA] flex items-center justify-between transition-colors cursor-pointer"
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <ShieldCheck className="w-3.5 h-3.5 text-[#8C827A]" />
+                          <span>Security Question</span>
+                        </div>
+                        {!user.hasSecurityQuestion && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#FAF0E6] text-[#C86D51] font-medium border border-[#E7D7C5]">
+                            Setup needed
+                          </span>
+                        )}
+                      </button>
+
                       <button
                         id="nav-profile-signout-btn"
                         onClick={() => {

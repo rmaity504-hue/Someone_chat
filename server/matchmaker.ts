@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import { db } from './db.js';
 import { MatchSession, ChatMessage } from '../src/types.js';
-import { SafetyEvaluation } from './safety.js';
+import { SafetyEvaluation, sanitizeOffPlatformContent } from './safety.js';
 import crypto from 'crypto';
 import { simulator, BOT_USER_ID, BOT_NAME } from './simulator.js';
 
@@ -15,9 +15,11 @@ export interface WaitingUser {
   userId: string;
   joinedAt: number;
   isVolunteer: boolean;
+  topics?: string[];
 }
 
 // Configured matching duration thresholds
+export const TOPIC_FALLBACK_THRESHOLD_MS = 7000; // 7 seconds before matching without overlapping topics
 export const VOLUNTEER_FALLBACK_THRESHOLD_MS = 45000; // 45 seconds waiting before volunteer fallback
 export const NO_ONE_AVAILABLE_THRESHOLD_MS = 75000; // 75 seconds total before showing calm "No one available right now"
 
@@ -102,7 +104,7 @@ export class Matchmaker {
   }
 
   // User enters matching pool
-  enterMatching(userId: string): { success: boolean; message?: string } {
+  enterMatching(userId: string, rawTopics?: string[]): { success: boolean; message?: string } {
     const user = db.getUserById(userId);
     if (!user) return { success: false, message: 'User not found' };
 
@@ -118,12 +120,21 @@ export class Matchmaker {
     // Leave any current room or waiting state first
     this.leaveMatching(userId);
 
+    const sanitizedTopics = Array.isArray(rawTopics)
+      ? rawTopics
+          .filter((t) => typeof t === 'string' && t.trim().length > 0)
+          .map((t) => t.trim().toLowerCase().slice(0, 30))
+          .filter((t, i, arr) => arr.indexOf(t) === i)
+          .slice(0, 3)
+      : [];
+
     this.waitingPool.set(userId, {
       userId,
       joinedAt: Date.now(),
       isVolunteer: false,
+      topics: sanitizedTopics,
     });
-    console.log(`[Matchmaker] User joined pool: ${userId}`);
+    console.log(`[Matchmaker] User joined pool: ${userId}, topics: [${sanitizedTopics.join(', ')}]`);
 
     db.updateUser(userId, { status: 'matching' });
     this.sendToUser(userId, 'matching:state', { state: 'searching', message: "Finding someone who's available..." });
@@ -209,7 +220,22 @@ export class Matchmaker {
 
   private tryMatch(userId: string): boolean {
     const userA = db.getUserById(userId);
-    if (!userA) return false;
+    const waitingA = this.waitingPool.get(userId);
+    if (!userA || !waitingA) return false;
+
+    const now = Date.now();
+    const waitTimeA = now - waitingA.joinedAt;
+    const fallbackA = waitTimeA >= TOPIC_FALLBACK_THRESHOLD_MS;
+    const topicsA = waitingA.topics || [];
+
+    interface Candidate {
+      userId: string;
+      overlapCount: number;
+      overlappingTopics: string[];
+      waitTime: number;
+    }
+
+    const eligibleCandidates: Candidate[] = [];
 
     // Search for another waiting user who isn't userA
     for (const [otherId, waitingB] of this.waitingPool.entries()) {
@@ -225,15 +251,55 @@ export class Matchmaker {
         continue;
       }
 
-      // We found a normal match!
-      this.waitingPool.delete(userId);
-      this.waitingPool.delete(otherId);
+      const waitTimeB = now - waitingB.joinedAt;
+      const fallbackB = waitTimeB >= TOPIC_FALLBACK_THRESHOLD_MS;
+      const topicsB = waitingB.topics || [];
 
-      this.createPendingSession(userA.id, userB.id, false);
-      return true;
+      // Calculate topic overlap
+      const overlapping = topicsA.filter((t) => topicsB.includes(t));
+      const overlapCount = overlapping.length;
+
+      // Topic Matchmaking Logic:
+      // 1. If both users share overlapping topics -> always eligible!
+      // 2. If neither user specified topics -> always eligible!
+      // 3. Fallback: If either waiting duration >= 7 seconds -> fallback eligible for any user!
+      // 4. If user A has waited >= 7s or has no topics and candidate has waited >= 7s -> eligible!
+      const canMatch =
+        overlapCount > 0 ||
+        (topicsA.length === 0 && topicsB.length === 0) ||
+        fallbackA ||
+        fallbackB;
+
+      if (canMatch) {
+        eligibleCandidates.push({
+          userId: otherId,
+          overlapCount,
+          overlappingTopics: overlapping,
+          waitTime: waitTimeB,
+        });
+      }
     }
 
-    return false;
+    if (eligibleCandidates.length === 0) return false;
+
+    // Prioritize candidates:
+    // 1. Highest topic overlap count
+    // 2. Longest wait time
+    eligibleCandidates.sort((a, b) => {
+      if (b.overlapCount !== a.overlapCount) {
+        return b.overlapCount - a.overlapCount;
+      }
+      return b.waitTime - a.waitTime;
+    });
+
+    const chosen = eligibleCandidates[0];
+
+    // Remove both from pool
+    this.waitingPool.delete(userId);
+    this.waitingPool.delete(chosen.userId);
+
+    this.createPendingSession(userA.id, chosen.userId, false, chosen.overlappingTopics);
+    return true;
   }
 
   private checkVolunteerFallback(waitingUserId: string) {
@@ -313,7 +379,7 @@ export class Matchmaker {
   }
 
   // Create a pending match where both see "Someone is here." with "Connect", or instant pair for queue users
-  createPendingSession(user1Id: string, user2Id: string, isVolunteerMatch: boolean) {
+  createPendingSession(user1Id: string, user2Id: string, isVolunteerMatch: boolean, matchedTopics: string[] = []) {
     const user1 = db.getUserById(user1Id);
     const user2 = db.getUserById(user2Id);
     if (!user1 || !user2) return;
@@ -359,12 +425,14 @@ export class Matchmaker {
         roomId,
         partnerId: user2Id,
         partnerDisplayName: user2.displayName,
+        matchedTopics,
       });
 
       this.sendToUser(user2Id, 'session:start', {
         roomId,
         partnerId: user1Id,
         partnerDisplayName: user1.displayName,
+        matchedTopics,
       });
 
       console.log(`[Matchmaker] Instant pairing: user ${user1Id} and user ${user2Id} transitioned directly into active chat (room: ${roomId})`);
@@ -474,6 +542,9 @@ export class Matchmaker {
     const sender = db.getUserById(senderId);
     if (!sender) return { success: false, error: 'User not found' };
 
+    // Off-platform links and handles scrambler to protect user anonymity
+    const { sanitized, wasModified } = sanitizeOffPlatformContent(text);
+
     session.messageCount = (session.messageCount || 0) + 1;
 
     const recipientId = session.user1Id === senderId ? session.user2Id : session.user1Id;
@@ -483,7 +554,7 @@ export class Matchmaker {
       roomId,
       senderId,
       senderName: sender.displayName,
-      text,
+      text: sanitized,
       timestamp: Date.now(),
     };
 
@@ -491,9 +562,16 @@ export class Matchmaker {
     this.sendToUser(senderId, 'chat:message', msg);
     this.sendToUser(recipientId, 'chat:message', msg);
 
+    // If external link or handle was hidden, notify sender with friendly notice
+    if (wasModified) {
+      this.sendToUser(senderId, 'chat:notice', {
+        message: 'Sharing external links or handles is disabled to protect anonymity.',
+      });
+    }
+
     // If talking with the simulated companion, trigger automated 2-second reply
     if (recipientId === BOT_USER_ID) {
-      simulator.handleUserMessage(senderId, roomId, text, this);
+      simulator.handleUserMessage(senderId, roomId, sanitized, this);
     }
 
     return { success: true };
@@ -608,6 +686,9 @@ export class Matchmaker {
       const completedSession = db.recordCompletedSession(roomId, session.user1Id, session.user2Id, session.createdAt);
 
       // Notify both users of disconnect, and prompt for mutual friendship with server signature
+      this.sendToUser(session.user1Id, 'partner_disconnected', { roomId, reason });
+      this.sendToUser(session.user2Id, 'partner_disconnected', { roomId, reason });
+
       this.sendToUser(session.user1Id, 'session:ended', {
         roomId,
         partnerId: session.user2Id,
@@ -629,6 +710,9 @@ export class Matchmaker {
       });
     } else {
       // Chat was aborted before entering room, timed out, or had 0 messages sent
+      this.sendToUser(session.user1Id, 'partner_disconnected', { roomId, reason });
+      this.sendToUser(session.user2Id, 'partner_disconnected', { roomId, reason });
+
       this.sendToUser(session.user1Id, 'session:ended', {
         roomId,
         reason,
@@ -644,6 +728,26 @@ export class Matchmaker {
       this.sendToUser(session.user1Id, 'matching:state', { state: 'idle', message: reason });
       this.sendToUser(session.user2Id, 'matching:state', { state: 'idle', message: reason });
     }
+  }
+
+  // Real-time ephemeral typing indicator
+  handleTyping(userId: string, roomId: string, isTyping: boolean) {
+    const session = this.activeSessions.get(roomId);
+    if (!session || session.status !== 'active') return;
+    if (session.user1Id !== userId && session.user2Id !== userId) return;
+
+    const recipientId = session.user1Id === userId ? session.user2Id : session.user1Id;
+    this.sendToUser(recipientId, 'user_typing', { isTyping, senderId: userId, roomId });
+    this.sendToUser(recipientId, 'chat:typing', { isTyping, senderId: userId, roomId });
+  }
+
+  // Teardown current conversation and immediately enter matching for the next partner
+  skipToNext(userId: string, topics: string[] = []): { success: boolean; message?: string } {
+    const roomId = this.userToRoom.get(userId);
+    if (roomId) {
+      this.endSession(roomId, 'Partner skipped to next conversation');
+    }
+    return this.enterMatching(userId, topics);
   }
 
   // User submits choice on "Would you like to talk to this person again?"

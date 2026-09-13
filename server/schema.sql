@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS users (
   verification_token VARCHAR(128),
   verification_token_expires_at BIGINT,
   is_age_confirmed BOOLEAN DEFAULT FALSE,
+  security_question TEXT,
+  security_answer_hash TEXT,
   role VARCHAR(32) DEFAULT 'user',
   status VARCHAR(32) DEFAULT 'offline',
   safety_acknowledged BOOLEAN DEFAULT FALSE,
@@ -35,6 +37,8 @@ CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 
 -- Ensure incremental columns exist on pre-existing users tables before index creation
+ALTER TABLE users ADD COLUMN IF NOT EXISTS security_question TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS security_answer_hash TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token VARCHAR(128);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token_expires_at BIGINT;
 

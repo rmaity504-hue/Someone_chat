@@ -13,6 +13,7 @@ import { FriendsModal } from './components/FriendsModal.js';
 import { AdminDashboard } from './components/AdminDashboard.js';
 import { AppealModal } from './components/AppealModal.js';
 import { DeleteAccountModal } from './components/DeleteAccountModal.js';
+import { AccountSecurityModal } from './components/AccountSecurityModal.js';
 import { AlertOctagon, AlertCircle, X } from 'lucide-react';
 
 function MainApp() {
@@ -31,8 +32,12 @@ function MainApp() {
   const [adminModalOpen, setAdminModalOpen] = useState(false);
   const [appealModalOpen, setAppealModalOpen] = useState(false);
   const [deleteAccountModalOpen, setDeleteAccountModalOpen] = useState(false);
+  const [securityModalOpen, setSecurityModalOpen] = useState(false);
+  const [pendingTopics, setPendingTopics] = useState<string[]>([]);
 
-  const handleFindSomeone = () => {
+  const handleFindSomeone = (topics?: string[]) => {
+    const activeTopics = topics || [];
+    setPendingTopics(activeTopics);
     if (!user) {
       setAuthModalOpen(true);
       return;
@@ -41,7 +46,7 @@ function MainApp() {
       setSafetyModalOpen(true);
       return;
     }
-    enterMatching();
+    enterMatching(activeTopics);
   };
 
   const isRestrictedOrSuspended =
@@ -56,6 +61,7 @@ function MainApp() {
         onOpenAdmin={() => setAdminModalOpen(true)}
         onOpenSafety={() => setSafetyModalOpen(true)}
         onOpenDeleteAccount={() => setDeleteAccountModalOpen(true)}
+        onOpenSecurity={() => setSecurityModalOpen(true)}
       />
 
       {/* Account Enforcement Banner if Restricted/Suspended */}
@@ -84,7 +90,7 @@ function MainApp() {
         {activeSession ? (
           <ChatView />
         ) : matchingState.state !== 'idle' ? (
-          <MatchingView onCancel={() => {}} />
+          <MatchingView onCancel={() => {}} topics={pendingTopics} />
         ) : (
           <HomeView
             onFindSomeone={handleFindSomeone}
@@ -106,7 +112,7 @@ function MainApp() {
       <SafetyNoticeModal
         isOpen={safetyModalOpen}
         onClose={() => setSafetyModalOpen(false)}
-        onProceedToMatch={() => enterMatching()}
+        onProceedToMatch={() => enterMatching(pendingTopics)}
       />
 
       <AuthModal
@@ -132,6 +138,11 @@ function MainApp() {
       <DeleteAccountModal
         isOpen={deleteAccountModalOpen}
         onClose={() => setDeleteAccountModalOpen(false)}
+      />
+
+      <AccountSecurityModal
+        isOpen={securityModalOpen}
+        onClose={() => setSecurityModalOpen(false)}
       />
 
       {/* Diagnostic & Connection Notification Toast */}

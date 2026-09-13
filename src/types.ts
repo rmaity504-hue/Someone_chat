@@ -24,6 +24,8 @@ export interface UserProfile {
   restrictionReason?: string;
   suspendedUntil?: number;
   violationCount?: number;
+  securityQuestion?: string;
+  hasSecurityQuestion?: boolean;
 }
 
 export interface ModerationRecord {
@@ -40,6 +42,8 @@ export interface ModerationRecord {
 export interface PrivateUserRecord extends UserProfile {
   email: string;
   passwordHash: string;
+  securityQuestion?: string;
+  securityAnswerHash?: string;
   isAgeConfirmed: boolean;
   verificationCode?: string;
   verificationExpiresAt?: number;
@@ -121,6 +125,8 @@ export interface Friendship {
 export type ReportCategory =
   | 'sexual_solicitation'
   | 'unwanted_sexual_content'
+  | 'inappropriate_content'
+  | 'off_platform_solicitation'
   | 'harassment'
   | 'threats'
   | 'coercion'

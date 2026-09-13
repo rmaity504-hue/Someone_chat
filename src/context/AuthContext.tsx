@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { UserProfile, ChatMessage, Friendship, AdminStats } from '../types.js';
 import { getWebSocketUrl, socketService } from '../services/socket.js';
+import { playMatchChime, playMessageBlip } from '../utils/audioHaptics.js';
 
 export interface VolunteerRequest {
   offerId: string;
@@ -20,6 +21,7 @@ export interface ActiveSession {
   partnerId: string;
   partnerDisplayName: string;
   isSimulator?: boolean;
+  matchedTopics?: string[];
 }
 
 interface AuthContextType {
@@ -30,6 +32,7 @@ interface AuthContextType {
   matchingState: MatchingState;
   activeSession: ActiveSession | null;
   messages: ChatMessage[];
+  isPartnerTyping: boolean;
   pendingVolunteerRequest: VolunteerRequest | null;
   postChatPartner: { partnerId: string; partnerDisplayName: string; roomId: string; sessionSignature?: string } | null;
   friendshipNotice: string | null;
@@ -37,8 +40,10 @@ interface AuthContextType {
   login: (token: string, user: UserProfile) => void;
   logout: () => void;
   refreshUser: () => Promise<void>;
-  enterMatching: () => void;
+  enterMatching: (topics?: string[]) => void;
   leaveMatching: () => void;
+  skipToNext: (topics?: string[]) => void;
+  sendTyping: (isTyping: boolean) => void;
   acceptMatch: (roomId: string) => void;
   respondToVolunteer: (offerId: string, action: 'connect' | 'not_now') => void;
   sendMessage: (text: string) => void;
@@ -50,6 +55,7 @@ interface AuthContextType {
   toggleVolunteer: (active: boolean) => Promise<boolean>;
   acknowledgeSafety: () => Promise<boolean>;
   verifyEmail: (code: string) => Promise<boolean>;
+  updateSecurityQuestion: (question: string, answer: string) => Promise<{ success: boolean; error?: string }>;
   deleteAccount: (password?: string) => Promise<{ success: boolean; error?: string }>;
   clearNotification: () => void;
   matchWithCompanion: () => Promise<boolean>;
@@ -78,6 +84,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [matchingState, setMatchingState] = useState<MatchingState>({ state: 'idle' });
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [isPartnerTyping, setIsPartnerTyping] = useState<boolean>(false);
   const [pendingVolunteerRequest, setPendingVolunteerRequest] = useState<VolunteerRequest | null>(null);
   const [postChatPartner, setPostChatPartner] = useState<{
     partnerId: string;
@@ -89,9 +96,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [systemNotification, setSystemNotification] = useState<string | null>(null);
 
   const messagesRef = useRef<ChatMessage[]>([]);
+  const userRef = useRef<UserProfile | null>(null);
+  const partnerTypingTimerRef = useRef<any>(null);
+
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
 
   const clearNotification = () => setSystemNotification(null);
 
@@ -221,19 +235,61 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     const unsubSessionStart = socketService.on('session:start', (data) => {
+      playMatchChime();
       setActiveSession({
         roomId: data.roomId,
         partnerId: data.partnerId,
         partnerDisplayName: data.partnerDisplayName,
         isSimulator: data.isSimulator,
+        matchedTopics: data.matchedTopics,
       });
       setMessages([]);
+      setIsPartnerTyping(false);
       setMatchingState({ state: 'idle' });
       setPendingVolunteerRequest(null);
     });
 
     const unsubChatMessage = socketService.on('chat:message', (data) => {
+      if (userRef.current && data.senderId !== userRef.current.id) {
+        playMessageBlip();
+        setIsPartnerTyping(false);
+      }
       setMessages((prev) => [...prev, data]);
+    });
+
+    const unsubChatNotice = socketService.on('chat:notice', (data) => {
+      if (data?.message) {
+        setSystemNotification(data.message);
+      }
+    });
+
+    const unsubChatWarning = socketService.on('chat:warning', (data) => {
+      if (data?.message) {
+        setSystemNotification(data.message);
+      }
+    });
+
+    const unsubTyping = socketService.on('user_typing', (data) => {
+      if (data?.isTyping) {
+        setIsPartnerTyping(true);
+        if (partnerTypingTimerRef.current) clearTimeout(partnerTypingTimerRef.current);
+        partnerTypingTimerRef.current = setTimeout(() => {
+          setIsPartnerTyping(false);
+        }, 3000);
+      } else {
+        setIsPartnerTyping(false);
+        if (partnerTypingTimerRef.current) clearTimeout(partnerTypingTimerRef.current);
+      }
+    });
+
+    const unsubPartnerDisconnected = socketService.on('partner_disconnected', (data) => {
+      setActiveSession(null);
+      setMessages([]);
+      setIsPartnerTyping(false);
+      setMatchingState({ state: 'idle' });
+      if (data?.reason) {
+        setSystemNotification(data.reason);
+      }
     });
 
     const unsubChatBlocked = socketService.on('chat:blocked', (data) => {
@@ -242,6 +298,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const unsubSessionEnded = socketService.on('session:ended', (data) => {
       setActiveSession(null);
+      setIsPartnerTyping(false);
       setMatchingState({ state: 'idle' });
       const hadMessages = messagesRef.current.length > 0 || (data.messageCount && data.messageCount > 0);
       if (data.safetyIntervention) {
@@ -263,6 +320,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const unsubSessionEnforcement = socketService.on('session:enforcement', (data) => {
       setActiveSession(null);
+      setIsPartnerTyping(false);
       setMatchingState({ state: 'idle' });
       setMessages([]);
       setSystemNotification(data.message);
@@ -291,10 +349,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       unsubVolunteerRequest();
       unsubSessionStart();
       unsubChatMessage();
+      unsubChatNotice();
+      unsubChatWarning();
+      unsubTyping();
+      unsubPartnerDisconnected();
       unsubChatBlocked();
       unsubSessionEnded();
       unsubSessionEnforcement();
       unsubFriendshipCreated();
+      if (partnerTypingTimerRef.current) clearTimeout(partnerTypingTimerRef.current);
     };
   }, [token, user?.id, refreshUser]);
 
@@ -319,14 +382,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setMatchingState({ state: 'idle' });
   };
 
-  const enterMatching = () => {
-    socketService.send('matching:enter');
+  const enterMatching = (topics?: string[]) => {
+    socketService.send('matching:enter', { topics });
     setMatchingState({ state: 'searching', message: "Finding someone who's available..." });
   };
 
   const leaveMatching = () => {
     socketService.send('matching:leave');
     setMatchingState({ state: 'idle' });
+  };
+
+  const skipToNext = (topics?: string[]) => {
+    socketService.send('chat:next', { topics });
+    setActiveSession(null);
+    setMessages([]);
+    setIsPartnerTyping(false);
+    setMatchingState({ state: 'searching', message: "Finding someone who's available..." });
+  };
+
+  const sendTyping = (isTyping: boolean) => {
+    if (!activeSession) return;
+    socketService.send('user_typing', { roomId: activeSession.roomId, isTyping });
   };
 
   const acceptMatch = (roomId: string) => {
@@ -352,9 +428,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const disconnectChat = () => {
-    if (!activeSession) return;
-    socketService.send('chat:disconnect', { roomId: activeSession.roomId });
+    if (activeSession) {
+      socketService.send('chat:disconnect', { roomId: activeSession.roomId });
+    }
     setActiveSession(null);
+    setMessages([]);
+    setIsPartnerTyping(false);
     setMatchingState({ state: 'idle' });
   };
 
@@ -492,6 +571,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return false;
   };
 
+  const updateSecurityQuestion = async (
+    question: string,
+    answer: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!token) return { success: false, error: 'Not authenticated' };
+    try {
+      const res = await fetch('/api/auth/security-question', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ question, answer }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return { success: false, error: data.error || 'Failed to update security question' };
+      }
+      if (data.user) {
+        setUser(data.user);
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Connection error' };
+    }
+  };
+
   const deleteAccount = async (password?: string): Promise<{ success: boolean; error?: string }> => {
     if (!token) return { success: false, error: 'Not authenticated' };
     try {
@@ -579,6 +685,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         matchingState,
         activeSession,
         messages,
+        isPartnerTyping,
         pendingVolunteerRequest,
         postChatPartner,
         friendshipNotice,
@@ -588,6 +695,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         refreshUser,
         enterMatching,
         leaveMatching,
+        skipToNext,
+        sendTyping,
         acceptMatch,
         respondToVolunteer,
         sendMessage,
@@ -599,6 +708,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         toggleVolunteer,
         acknowledgeSafety,
         verifyEmail,
+        updateSecurityQuestion,
         deleteAccount,
         clearNotification,
         matchWithCompanion,

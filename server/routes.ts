@@ -1,10 +1,8 @@
 import express, { Request, Response, NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
-import { db, hashPassword, verifyPassword } from './db.js';
+import { db, hashPassword, verifyPassword, hashSecurityAnswer } from './db.js';
 import { matchmaker } from './matchmaker.js';
 import {
-  generateVerificationCode,
-  sendPasswordResetEmail,
   sendDiagnosticTestEmail,
 } from './email.js';
 import { REQUIRE_EMAIL_VERIFICATION } from './config.js';
@@ -165,6 +163,8 @@ export function requireStaff(req: Request, res: Response, next: NextFunction): v
 
 apiRouter.post(['/auth/register', '/register'], registrationLimiter, async (req: Request, res: Response): Promise<void> => {
   const { email, password, displayName, isAgeConfirmed } = req.body;
+  const securityQuestion = req.body.security_question || req.body.securityQuestion;
+  const securityAnswer = req.body.security_answer || req.body.securityAnswer;
 
   if (!email || typeof email !== 'string' || !email.includes('@')) {
     res.status(400).json({ error: 'A valid email address is required.' });
@@ -182,6 +182,14 @@ apiRouter.post(['/auth/register', '/register'], registrationLimiter, async (req:
     res.status(400).json({ error: 'You must confirm you are 18 years of age or older.' });
     return;
   }
+  if (!securityQuestion || typeof securityQuestion !== 'string' || securityQuestion.trim().length < 3) {
+    res.status(400).json({ error: 'Please select or provide a security question.' });
+    return;
+  }
+  if (!securityAnswer || typeof securityAnswer !== 'string' || securityAnswer.trim().length < 1) {
+    res.status(400).json({ error: 'Please provide an answer to your security question.' });
+    return;
+  }
 
   const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
   if (clientIp && db.isIpBanned(clientIp)) {
@@ -196,8 +204,19 @@ apiRouter.post(['/auth/register', '/register'], registrationLimiter, async (req:
     return;
   }
 
-  // Create user directly as active and verified (no 6-digit OTP or verification email required)
-  const user = db.createUser(cleanEmail, hashPassword(password), displayName.trim(), clientIp, true);
+  // Hash the normalized (trimmed, lowercase) security answer securely with bcrypt
+  const answerHash = hashSecurityAnswer(securityAnswer);
+
+  // Create user directly as active and verified
+  const user = db.createUser(
+    cleanEmail,
+    hashPassword(password),
+    displayName.trim(),
+    clientIp,
+    true,
+    securityQuestion.trim(),
+    answerHash
+  );
   const token = db.createSession(user.id);
 
   res.json({
@@ -275,7 +294,12 @@ apiRouter.get(
 );
 
 apiRouter.post(
-  ['/auth/forgot-password', '/forgot-password'],
+  [
+    '/auth/get-security-question',
+    '/get-security-question',
+    '/auth/forgot-password',
+    '/forgot-password',
+  ],
   forgotPasswordLimiter,
   async (req: Request, res: Response): Promise<void> => {
     const { email } = req.body;
@@ -287,45 +311,47 @@ apiRouter.post(
     const cleanEmail = email.toLowerCase().trim();
     const user = db.getUserByEmail(cleanEmail);
 
-    // Constant-time protection against user enumeration:
-    // If user does not exist or is banned, return generic success without leaking status
     if (!user || user.status === 'banned') {
-      res.json({
-        success: true,
-        message: 'If an account exists with that email address, a 6-digit password reset code has been dispatched.',
+      res.status(404).json({ error: 'No security question configured for this account. Contact admin.' });
+      return;
+    }
+
+    if (!user.securityQuestion || !user.securityAnswerHash) {
+      res.status(400).json({
+        error: 'No security question configured for this account. Contact admin.',
+        hasSecurityQuestion: false,
       });
       return;
     }
 
-    const code = generateVerificationCode();
-    await db.createPasswordReset(user.id, code, 15);
-    const emailResult = await sendPasswordResetEmail(user.email, code);
-
     res.json({
       success: true,
-      message: 'If an account exists with that email address, a 6-digit password reset code has been dispatched.',
-      previewCode: emailResult.previewCode,
-      isSandboxRestriction: emailResult.isSandboxRestriction,
-      emailWarning: emailResult.isSandboxRestriction
-        ? `Resend sandbox delivers to rmaity504@gmail.com. For testing ${cleanEmail}, your reset code is ${emailResult.previewCode}.`
-        : undefined,
+      hasSecurityQuestion: true,
+      question: user.securityQuestion,
     });
   }
 );
 
 apiRouter.post(
-  ['/auth/reset-password', '/reset-password'],
+  [
+    '/auth/reset-password-with-answer',
+    '/reset-password-with-answer',
+    '/auth/reset-password',
+    '/reset-password',
+  ],
   resetPasswordLimiter,
   async (req: Request, res: Response): Promise<void> => {
-    const { email, code, newPassword } = req.body;
+    const email = req.body.email;
+    const answer = req.body.answer || req.body.security_answer || req.body.securityAnswer;
+    const newPassword = req.body.newPassword || req.body.new_password || req.body.password;
 
     if (!email || typeof email !== 'string') {
       res.status(400).json({ error: 'Please provide your account email address.' });
       return;
     }
 
-    if (!code || typeof code !== 'string') {
-      res.status(400).json({ error: 'Please enter the 6-digit reset code.' });
+    if (!answer || typeof answer !== 'string' || answer.trim().length === 0) {
+      res.status(400).json({ error: 'Please provide the answer to your security question.' });
       return;
     }
 
@@ -337,25 +363,63 @@ apiRouter.post(
     const cleanEmail = email.toLowerCase().trim();
     const user = db.getUserByEmail(cleanEmail);
     if (!user || user.status === 'banned') {
-      res.status(400).json({ error: 'Invalid or expired password reset request.' });
+      res.status(400).json({ error: 'Invalid password recovery request.' });
       return;
     }
 
-    const verifyResult = await db.verifyAndConsumePasswordReset(user.id, code);
-    if (!verifyResult.success) {
-      res.status(400).json({ error: verifyResult.error || 'Invalid or expired reset code.' });
+    if (!user.securityQuestion || !user.securityAnswerHash) {
+      res.status(400).json({
+        error: 'No security question configured for this account. Contact admin.',
+      });
       return;
     }
 
-    // Hash new password, update user, and invalidate all existing active sessions
+    const isAnswerCorrect = db.verifyUserSecurityAnswer(user.id, answer);
+    if (!isAnswerCorrect) {
+      res.status(400).json({ error: 'Incorrect answer to the security question. Please try again.' });
+      return;
+    }
+
+    // Hash new password and update user credentials
     await db.updateUserPassword(user.id, newPassword);
+
+    // Create session token to log them in immediately
+    const token = db.createSession(user.id);
 
     res.json({
       success: true,
-      message: 'Your password has been successfully reset. All previous sessions have been signed out. Please sign in with your new password.',
+      token,
+      user: db.toPublicProfile(user),
+      message: 'Your password has been successfully reset. You are now signed in.',
     });
   }
 );
+
+// Authenticated route for users to set or update their security question & answer
+apiRouter.post('/auth/security-question', authenticate, async (req: Request, res: Response): Promise<void> => {
+  const user = (req as any).user;
+  const { question, answer } = req.body;
+
+  if (!question || typeof question !== 'string' || question.trim().length < 3) {
+    res.status(400).json({ error: 'Please select or enter a valid security question.' });
+    return;
+  }
+
+  if (!answer || typeof answer !== 'string' || answer.trim().length < 2) {
+    res.status(400).json({ error: 'Please provide an answer (minimum 2 characters).' });
+    return;
+  }
+
+  const answerHash = hashSecurityAnswer(answer);
+  await db.setSecurityQuestion(user.id, question.trim(), answerHash);
+
+  const updatedUser = db.getUserById(user.id);
+  res.json({
+    success: true,
+    message: 'Security question configured successfully.',
+    user: db.toPublicProfile(updatedUser || user),
+  });
+});
 
 apiRouter.post('/auth/acknowledge-safety', authenticate, (req: Request, res: Response): void => {
   const user = (req as any).user;
@@ -581,6 +645,17 @@ apiRouter.post(['/safety/report', '/report'], reportLimiter, authenticate, (req:
     roomId,
     evidenceSnippet
   );
+
+  // Record in moderation review flags
+  const reportedUser = db.getUserById(reportedUserId);
+  db.addFlag({
+    userId: reportedUserId,
+    displayName: reportedUser ? reportedUser.displayName : 'Unknown',
+    roomId,
+    triggerCategory: category,
+    flaggedText: `User Report (${category}): ${details.trim()}` + (evidenceSnippet ? ` [Evidence: ${evidenceSnippet}]` : ''),
+    severity: 'high',
+  });
 
   // Auto-block the reported user immediately
   db.blockUser(user.id, reportedUserId);
