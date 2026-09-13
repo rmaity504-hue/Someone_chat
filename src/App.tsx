@@ -14,7 +14,9 @@ import { AdminDashboard } from './components/AdminDashboard.js';
 import { AppealModal } from './components/AppealModal.js';
 import { DeleteAccountModal } from './components/DeleteAccountModal.js';
 import { AccountSecurityModal } from './components/AccountSecurityModal.js';
-import { AlertOctagon, AlertCircle, X } from 'lucide-react';
+import { AboutPhilosophyModal } from './components/AboutPhilosophyModal.js';
+import { ContactAdminModal } from './components/ContactAdminModal.js';
+import { AlertOctagon, AlertCircle, X, MessageSquare } from 'lucide-react';
 
 function MainApp() {
   const {
@@ -33,6 +35,9 @@ function MainApp() {
   const [appealModalOpen, setAppealModalOpen] = useState(false);
   const [deleteAccountModalOpen, setDeleteAccountModalOpen] = useState(false);
   const [securityModalOpen, setSecurityModalOpen] = useState(false);
+  const [aboutModalOpen, setAboutModalOpen] = useState(false);
+  const [aboutInitialTab, setAboutInitialTab] = useState<'philosophy' | 'retention' | 'safety'>('philosophy');
+  const [contactAdminOpen, setContactAdminOpen] = useState(false);
   const [pendingTopics, setPendingTopics] = useState<string[]>([]);
 
   const handleFindSomeone = (topics?: string[]) => {
@@ -62,6 +67,12 @@ function MainApp() {
         onOpenSafety={() => setSafetyModalOpen(true)}
         onOpenDeleteAccount={() => setDeleteAccountModalOpen(true)}
         onOpenSecurity={() => setSecurityModalOpen(true)}
+        onOpenAbout={(tab) => {
+          setAboutInitialTab(tab || 'philosophy');
+          setAboutModalOpen(true);
+        }}
+        onOpenContactAdmin={() => setContactAdminOpen(true)}
+        onChatNow={() => handleFindSomeone()}
       />
 
       {/* Account Enforcement Banner if Restricted/Suspended */}
@@ -100,14 +111,46 @@ function MainApp() {
         )}
       </main>
 
-      {/* Footer minimal philosophy reassurance */}
-      <footer className="w-full py-6 text-center text-xs text-[#8C827A] border-t border-[#E7E0D8]/60">
-        <p>Someone • A quiet corner for genuine human conversation.</p>
+      {/* Footer minimal philosophy reassurance & links */}
+      <footer className="w-full py-6 px-4 text-center text-xs text-[#8C827A] border-t border-[#E7E0D8]/60 bg-[#FAF8F5]">
+        <div className="max-w-4xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
+          <p>Someone • A quiet corner for genuine human conversation.</p>
+          <div className="flex flex-wrap items-center justify-center gap-4 text-xs">
+            <button
+              id="footer-philosophy-btn"
+              onClick={() => {
+                setAboutInitialTab('philosophy');
+                setAboutModalOpen(true);
+              }}
+              className="hover:text-[#2D2723] underline underline-offset-4 decoration-[#E7E0D8] transition-colors cursor-pointer"
+            >
+              Our Philosophy & Architecture
+            </button>
+            <button
+              id="footer-retention-btn"
+              onClick={() => {
+                setAboutInitialTab('retention');
+                setAboutModalOpen(true);
+              }}
+              className="hover:text-[#2D2723] underline underline-offset-4 decoration-[#E7E0D8] transition-colors cursor-pointer"
+            >
+              Zero-Retention Policy
+            </button>
+            <button
+              id="footer-contact-admin-btn"
+              onClick={() => setContactAdminOpen(true)}
+              className="hover:text-[#2D2723] underline underline-offset-4 decoration-[#E7E0D8] transition-colors cursor-pointer flex items-center gap-1"
+            >
+              <MessageSquare className="w-3.5 h-3.5 text-[#8C827A]" />
+              <span>Contact Admin</span>
+            </button>
+          </div>
+        </div>
       </footer>
 
       {/* Persistent & Interactive Overlays */}
       <VolunteerPromptBanner />
-      <PostChatModal />
+      <PostChatModal onOpenSavedConnections={() => setFriendsModalOpen(true)} />
 
       <SafetyNoticeModal
         isOpen={safetyModalOpen}
@@ -143,6 +186,17 @@ function MainApp() {
       <AccountSecurityModal
         isOpen={securityModalOpen}
         onClose={() => setSecurityModalOpen(false)}
+      />
+
+      <AboutPhilosophyModal
+        isOpen={aboutModalOpen}
+        onClose={() => setAboutModalOpen(false)}
+        initialTab={aboutInitialTab}
+      />
+
+      <ContactAdminModal
+        isOpen={contactAdminOpen}
+        onClose={() => setContactAdminOpen(false)}
       />
 
       {/* Diagnostic & Connection Notification Toast */}

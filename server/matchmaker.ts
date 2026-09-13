@@ -29,6 +29,7 @@ export class Matchmaker {
   private activeSessions: Map<string, MatchSession> = new Map(); // roomId -> MatchSession
   private userToRoom: Map<string, string> = new Map(); // userId -> roomId
   private volunteerOffers: Map<string, { volunteerId: string; waitingUserId: string; createdAt: number }> = new Map();
+  private roomKeepInTouchRequests: Map<string, Set<string>> = new Map(); // roomId -> Set of userIds who tapped Keep in Touch
 
   constructor() {
     // Periodic check for matching & volunteer fallback & heartbeat cleanup
@@ -827,6 +828,134 @@ export class Matchmaker {
 
   getActiveSocketsCount(): number {
     return this.clients.size;
+  }
+
+  isClientConnected(userId: string): boolean {
+    const c = this.clients.get(userId);
+    return Boolean(c && c.ws && c.ws.readyState === WebSocket.OPEN);
+  }
+
+  handleKeepInTouch(userId: string, roomId: string): { mutual: boolean; partnerId?: string; partnerDisplayName?: string } {
+    const session = this.activeSessions.get(roomId);
+    if (!session) {
+      return { mutual: false };
+    }
+
+    if (session.user1Id !== userId && session.user2Id !== userId) {
+      return { mutual: false };
+    }
+
+    const partnerId = session.user1Id === userId ? session.user2Id : session.user1Id;
+    const partner = db.getUserById(partnerId);
+
+    let requests = this.roomKeepInTouchRequests.get(roomId);
+    if (!requests) {
+      requests = new Set<string>();
+      this.roomKeepInTouchRequests.set(roomId, requests);
+    }
+
+    requests.add(userId);
+
+    // If both users in the room have tapped Keep in Touch
+    if (requests.has(session.user1Id) && requests.has(session.user2Id)) {
+      db.addFriendship(session.user1Id, session.user2Id);
+
+      // Emit mutual_save_success event to both clients
+      this.sendToUser(session.user1Id, 'mutual_save_success', {
+        partnerId: session.user2Id,
+        partnerDisplayName: session.user2Name,
+        message: `Mutual connection saved with ${session.user2Name}!`,
+      });
+
+      this.sendToUser(session.user2Id, 'mutual_save_success', {
+        partnerId: session.user1Id,
+        partnerDisplayName: session.user1Name,
+        message: `Mutual connection saved with ${session.user1Name}!`,
+      });
+
+      // Backward compatible event
+      this.sendToUser(session.user1Id, 'friendship:created', {
+        partnerId: session.user2Id,
+        partnerDisplayName: session.user2Name,
+      });
+      this.sendToUser(session.user2Id, 'friendship:created', {
+        partnerId: session.user1Id,
+        partnerDisplayName: session.user1Name,
+      });
+
+      return {
+        mutual: true,
+        partnerId,
+        partnerDisplayName: partner ? partner.displayName : 'Someone',
+      };
+    }
+
+    // Only one user has tapped: record choice privately with zero rejection disclosure
+    this.sendToUser(userId, 'connection:keep_in_touch_recorded', {
+      roomId,
+      choice: true,
+      message: 'Your choice has been recorded privately.',
+    });
+
+    return {
+      mutual: false,
+      partnerId,
+      partnerDisplayName: partner ? partner.displayName : 'Someone',
+    };
+  }
+
+  createDirectSession(user1Id: string, user2Id: string): MatchSession | null {
+    const user1 = db.getUserById(user1Id);
+    const user2 = db.getUserById(user2Id);
+    if (!user1 || !user2) return null;
+
+    if (!this.isClientConnected(user1Id) || !this.isClientConnected(user2Id)) {
+      return null;
+    }
+
+    this.leaveMatching(user1Id);
+    this.leaveMatching(user2Id);
+
+    const roomId = 'room_direct_' + crypto.randomBytes(8).toString('hex');
+    const session: MatchSession = {
+      roomId,
+      user1Id,
+      user2Id,
+      user1Name: user1.displayName,
+      user2Name: user2.displayName,
+      status: 'active',
+      user1Connected: true,
+      user2Connected: true,
+      isVolunteerMatch: false,
+      createdAt: Date.now(),
+      messageCount: 0,
+      postChoices: {},
+    };
+
+    this.activeSessions.set(roomId, session);
+    this.userToRoom.set(user1Id, roomId);
+    this.userToRoom.set(user2Id, roomId);
+
+    db.updateUser(user1Id, { status: 'connected' });
+    db.updateUser(user2Id, { status: 'connected' });
+
+    this.sendToUser(user1Id, 'session:start', {
+      roomId,
+      partnerId: user2Id,
+      partnerDisplayName: user2.displayName,
+      matchedTopics: ['Saved Connection'],
+      isDirectChat: true,
+    });
+
+    this.sendToUser(user2Id, 'session:start', {
+      roomId,
+      partnerId: user1Id,
+      partnerDisplayName: user1.displayName,
+      matchedTopics: ['Saved Connection'],
+      isDirectChat: true,
+    });
+
+    return session;
   }
 
   // ----------------------------------------------------

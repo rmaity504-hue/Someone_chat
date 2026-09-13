@@ -13,8 +13,9 @@ import {
   Activity,
   X,
   Check,
+  MessageSquare,
 } from 'lucide-react';
-import { AdminStats, ReportRecord, ModerationFlagRecord, AppealRecord } from '../types.js';
+import { AdminStats, ReportRecord, ModerationFlagRecord, AppealRecord, SupportTicketRecord, SupportTicketStatus } from '../types.js';
 
 interface AdminDashboardProps {
   isOpen: boolean;
@@ -24,12 +25,14 @@ interface AdminDashboardProps {
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose }) => {
   const { token, user } = useAuth();
 
-  const [tab, setTab] = useState<'stats' | 'reports' | 'flags' | 'users' | 'appeals'>('stats');
+  const [tab, setTab] = useState<'stats' | 'reports' | 'flags' | 'users' | 'appeals' | 'tickets'>('stats');
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [reports, setReports] = useState<ReportRecord[]>([]);
   const [flags, setFlags] = useState<ModerationFlagRecord[]>([]);
   const [usersList, setUsersList] = useState<any[]>([]);
   const [appeals, setAppeals] = useState<AppealRecord[]>([]);
+  const [tickets, setTickets] = useState<SupportTicketRecord[]>([]);
+  const [ticketStatusFilter, setTicketStatusFilter] = useState<'all' | 'open' | 'resolved' | 'dismissed'>('all');
   const [loading, setLoading] = useState(false);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
@@ -100,6 +103,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose 
     } catch (err) {}
   };
 
+  const fetchTickets = async () => {
+    if (!token) return;
+    try {
+      const res = await fetch('/api/admin/tickets', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTickets(data.tickets || []);
+      }
+    } catch (err) {}
+  };
+
   useEffect(() => {
     if (isOpen && token) {
       fetchStats();
@@ -107,6 +123,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose 
       fetchFlags();
       fetchUsers();
       fetchAppeals();
+      fetchTickets();
     }
   }, [isOpen, token, tab]);
 
@@ -167,6 +184,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose 
         fetchUsers();
       }
     } catch (err) {}
+  };
+
+  const handleUpdateTicketStatus = async (ticketId: string, status: SupportTicketStatus) => {
+    try {
+      const res = await fetch(`/api/admin/tickets/${ticketId}/status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ status }),
+      });
+      if (res.ok) {
+        setActionSuccess(`Ticket marked as ${status}`);
+        fetchTickets();
+        setTimeout(() => setActionSuccess(null), 3000);
+      }
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   const handleToggleVolunteerRole = async (targetUserId: string, isVolunteer: boolean) => {
@@ -271,6 +308,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose 
           >
             <FileText className="w-3.5 h-3.5" />
             <span>Appeals ({appeals.filter((a) => a.status === 'pending').length})</span>
+          </button>
+
+          <button
+            id="admin-tab-tickets"
+            onClick={() => setTab('tickets')}
+            className={`py-3 px-3 border-b-2 transition-colors flex items-center gap-1.5 ${
+              tab === 'tickets' ? 'border-stone-900 text-stone-900' : 'border-transparent hover:text-stone-900'
+            }`}
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            <span>Support Tickets ({tickets.filter((t) => t.status === 'open').length})</span>
           </button>
         </div>
 
@@ -606,6 +654,161 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose 
                   </div>
                 ))
               )}
+            </div>
+          )}
+
+          {/* TAB 6: SUPPORT TICKETS */}
+          {tab === 'tickets' && (
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-stone-200">
+                <div>
+                  <h3 className="text-sm font-medium text-stone-900">In-App Support & Admin Tickets</h3>
+                  <p className="text-xs text-stone-500">
+                    Direct inquiries, bug reports, and harassment escalation submitted via Contact Admin
+                  </p>
+                </div>
+                {/* Filter buttons */}
+                <div className="flex items-center gap-1.5">
+                  {(['all', 'open', 'resolved', 'dismissed'] as const).map((filterStatus) => (
+                    <button
+                      key={filterStatus}
+                      id={`ticket-filter-${filterStatus}`}
+                      onClick={() => setTicketStatusFilter(filterStatus)}
+                      className={`px-2.5 py-1 rounded-lg text-xs capitalize transition-colors cursor-pointer ${
+                        ticketStatusFilter === filterStatus
+                          ? 'bg-stone-900 text-white font-medium'
+                          : 'bg-white border border-stone-200 text-stone-600 hover:bg-stone-100'
+                      }`}
+                    >
+                      {filterStatus}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {(() => {
+                const filteredTickets = tickets.filter((t) => {
+                  if (ticketStatusFilter === 'all') return true;
+                  return t.status === ticketStatusFilter;
+                });
+
+                if (filteredTickets.length === 0) {
+                  return (
+                    <div className="text-center py-12 bg-white rounded-xl border border-stone-200 text-stone-500 text-xs">
+                      No support tickets found with status "{ticketStatusFilter}".
+                    </div>
+                  );
+                }
+
+                const getCategoryBadgeClass = (cat: string) => {
+                  switch (cat) {
+                    case 'Harassment Report':
+                      return 'bg-red-50 text-red-700 border-red-200';
+                    case 'Bug':
+                      return 'bg-amber-50 text-amber-700 border-amber-200';
+                    case 'Account Issue':
+                      return 'bg-purple-50 text-purple-700 border-purple-200';
+                    default:
+                      return 'bg-blue-50 text-blue-700 border-blue-200';
+                  }
+                };
+
+                const getStatusBadgeClass = (status: string) => {
+                  switch (status) {
+                    case 'resolved':
+                      return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                    case 'dismissed':
+                      return 'bg-stone-100 text-stone-500 border-stone-200';
+                    default:
+                      return 'bg-amber-50 text-amber-800 border-amber-300 font-semibold';
+                  }
+                };
+
+                return (
+                  <div className="space-y-3">
+                    {filteredTickets.map((t) => (
+                      <div
+                        key={t.id}
+                        className="p-4 bg-white border border-stone-200 rounded-xl space-y-3 text-xs shadow-2xs hover:border-stone-300 transition-all"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className={`px-2 py-0.5 rounded-full border text-[11px] font-medium ${getCategoryBadgeClass(t.category)}`}>
+                              {t.category}
+                            </span>
+                            <span className={`px-2 py-0.5 rounded-full border text-[10px] uppercase tracking-wider ${getStatusBadgeClass(t.status)}`}>
+                              {t.status}
+                            </span>
+                            <span className="text-stone-400 text-[11px] font-mono">
+                              #{t.id.slice(-8)}
+                            </span>
+                          </div>
+                          <span className="text-stone-400 text-[11px]">
+                            {new Date(t.createdAt).toLocaleString()}
+                          </span>
+                        </div>
+
+                        <div>
+                          <h4 className="font-semibold text-stone-900 text-sm">{t.subject}</h4>
+                          <p className="text-[11px] text-stone-500 mt-0.5">
+                            Sender:{' '}
+                            {t.userDisplayName ? (
+                              <span className="text-stone-800 font-medium">
+                                {t.userDisplayName} {t.userEmail && `(${t.userEmail})`}
+                              </span>
+                            ) : t.userEmail ? (
+                              <span className="text-stone-800 font-medium">{t.userEmail}</span>
+                            ) : (
+                              <span className="italic">Anonymous / Guest</span>
+                            )}
+                          </p>
+                        </div>
+
+                        <div className="p-3 bg-stone-50 rounded-lg text-stone-800 whitespace-pre-wrap leading-relaxed border border-stone-200/60">
+                          {t.message}
+                        </div>
+
+                        {/* Action buttons */}
+                        <div className="flex items-center justify-between pt-1 border-t border-stone-100">
+                          <span className="text-[10px] text-stone-400">
+                            {t.resolvedAt && `Resolved ${new Date(t.resolvedAt).toLocaleDateString()}`}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            {t.status !== 'resolved' && (
+                              <button
+                                id={`ticket-resolve-btn-${t.id}`}
+                                onClick={() => handleUpdateTicketStatus(t.id, 'resolved')}
+                                className="px-3 py-1 bg-emerald-600 text-white rounded-lg text-xs font-medium hover:bg-emerald-700 transition-colors flex items-center gap-1 cursor-pointer"
+                              >
+                                <Check className="w-3 h-3" />
+                                <span>Mark Resolved</span>
+                              </button>
+                            )}
+                            {t.status !== 'dismissed' && (
+                              <button
+                                id={`ticket-dismiss-btn-${t.id}`}
+                                onClick={() => handleUpdateTicketStatus(t.id, 'dismissed')}
+                                className="px-2.5 py-1 bg-stone-100 text-stone-600 rounded-lg text-xs hover:bg-stone-200 transition-colors cursor-pointer"
+                              >
+                                Dismiss
+                              </button>
+                            )}
+                            {t.status !== 'open' && (
+                              <button
+                                id={`ticket-reopen-btn-${t.id}`}
+                                onClick={() => handleUpdateTicketStatus(t.id, 'open')}
+                                className="px-2.5 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg text-xs hover:bg-amber-100 transition-colors cursor-pointer"
+                              >
+                                Reopen
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
             </div>
           )}
         </div>

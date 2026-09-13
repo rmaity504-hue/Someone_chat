@@ -704,23 +704,53 @@ apiRouter.post('/safety/unblock', authenticate, (req: Request, res: Response): v
 });
 
 // ----------------------------------------------------
-// FRIENDS (MUTUAL CONSENT ONLY)
+// CONNECTIONS / FRIENDS (MUTUAL CONSENT ONLY)
 // ----------------------------------------------------
 
-apiRouter.get('/friends', authenticate, (req: Request, res: Response): void => {
+apiRouter.get(['/connections', '/friends'], authenticate, (req: Request, res: Response): void => {
   const user = (req as any).user;
-  const friends = db.getFriendshipsForUser(user.id);
-  res.json({ friends });
+  const rawFriends = db.getFriendshipsForUser(user.id);
+  const connections = rawFriends.map((f) => ({
+    ...f,
+    isOnline: matchmaker.isClientConnected(f.partnerId),
+  }));
+  res.json({ connections, friends: connections });
 });
 
-apiRouter.post('/friends/remove', authenticate, (req: Request, res: Response): void => {
+apiRouter.post(['/connections/start-chat', '/friends/start-chat'], authenticate, (req: Request, res: Response): void => {
   const user = (req as any).user;
-  const { friendId } = req.body;
-  if (!friendId) {
-    res.status(400).json({ error: 'Friend ID is required.' });
+  const { partnerId } = req.body;
+  if (!partnerId) {
+    res.status(400).json({ error: 'Partner ID is required.' });
     return;
   }
-  db.removeFriendship(user.id, friendId);
+  const rawFriends = db.getFriendshipsForUser(user.id);
+  const isFriend = rawFriends.some((f) => f.partnerId === partnerId);
+  if (!isFriend) {
+    res.status(403).json({ error: 'You can only start direct chats with mutual saved connections.' });
+    return;
+  }
+  if (!matchmaker.isClientConnected(partnerId)) {
+    res.status(400).json({ error: 'Partner is currently offline. You will be able to message when they are online.' });
+    return;
+  }
+  const session = matchmaker.createDirectSession(user.id, partnerId);
+  if (!session) {
+    res.status(400).json({ error: 'Unable to start session right now.' });
+    return;
+  }
+  res.json({ success: true, roomId: session.roomId });
+});
+
+apiRouter.post(['/connections/remove', '/friends/remove'], authenticate, (req: Request, res: Response): void => {
+  const user = (req as any).user;
+  const { friendId, partnerId } = req.body;
+  const targetId = friendId || partnerId;
+  if (!targetId) {
+    res.status(400).json({ error: 'Partner ID is required.' });
+    return;
+  }
+  db.removeFriendship(user.id, targetId);
   res.json({ success: true });
 });
 
@@ -901,6 +931,118 @@ apiRouter.post('/admin/user/:id/volunteer', adminLimiter, authenticate, requireS
   }
   res.json({ success: true, user: db.toPublicProfile(updated) });
 });
+
+// ----------------------------------------------------
+// SUPPORT TICKETS (IN-APP CONTACT ADMIN)
+// ----------------------------------------------------
+apiRouter.post('/support/ticket', (req: Request, res: Response): void => {
+  const { category, subject, message, email } = req.body;
+
+  const validCategories = ['Bug', 'Harassment Report', 'Account Issue', 'Feedback'];
+  if (!category || !validCategories.includes(category)) {
+    res.status(400).json({ error: 'Please choose a valid ticket category.' });
+    return;
+  }
+
+  if (!subject || typeof subject !== 'string' || subject.trim().length < 3) {
+    res.status(400).json({ error: 'Subject must be at least 3 characters long.' });
+    return;
+  }
+
+  if (!message || typeof message !== 'string' || message.trim().length < 10) {
+    res.status(400).json({ error: 'Message must be at least 10 characters long.' });
+    return;
+  }
+
+  // Attempt to extract authenticated user if token present
+  let userId: string | null = null;
+  let userEmail: string | undefined = email && typeof email === 'string' ? email.trim() : undefined;
+  let userDisplayName: string | undefined = undefined;
+
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.substring(7);
+    const authUserId = db.getUserIdByToken(token);
+    if (authUserId) {
+      const user = db.getUserById(authUserId);
+      if (user) {
+        userId = user.id;
+        userEmail = user.email;
+        userDisplayName = user.displayName;
+      }
+    }
+  }
+
+  const ticket = db.createSupportTicket({
+    userId,
+    userEmail,
+    userDisplayName,
+    category,
+    subject: subject.trim(),
+    message: message.trim(),
+  });
+
+  res.json({
+    success: true,
+    message: 'Message sent directly to admin review queue.',
+    ticketId: ticket.id,
+  });
+});
+
+apiRouter.get('/admin/tickets', adminLimiter, authenticate, requireStaff, (req: Request, res: Response): void => {
+  const tickets = db.getAllSupportTickets();
+  res.json({ tickets });
+});
+
+apiRouter.post(
+  ['/admin/tickets/:id/resolve', '/admin/tickets/:id/status'],
+  adminLimiter,
+  authenticate,
+  requireStaff,
+  (req: Request, res: Response): void => {
+    const { id } = req.params;
+    const { status, adminNotes } = req.body;
+
+    const validStatuses = ['open', 'resolved', 'dismissed'];
+    const newStatus = status || 'resolved';
+    if (!validStatuses.includes(newStatus)) {
+      res.status(400).json({ error: 'Invalid ticket status.' });
+      return;
+    }
+
+    const ticket = db.updateSupportTicketStatus(id, newStatus, adminNotes);
+    if (!ticket) {
+      res.status(404).json({ error: 'Support ticket not found' });
+      return;
+    }
+    res.json({ success: true, ticket });
+  }
+);
+
+apiRouter.patch(
+  '/admin/tickets/:id/status',
+  adminLimiter,
+  authenticate,
+  requireStaff,
+  (req: Request, res: Response): void => {
+    const { id } = req.params;
+    const { status, adminNotes } = req.body;
+
+    const validStatuses = ['open', 'resolved', 'dismissed'];
+    const newStatus = status || 'resolved';
+    if (!validStatuses.includes(newStatus)) {
+      res.status(400).json({ error: 'Invalid ticket status.' });
+      return;
+    }
+
+    const ticket = db.updateSupportTicketStatus(id, newStatus, adminNotes);
+    if (!ticket) {
+      res.status(404).json({ error: 'Support ticket not found' });
+      return;
+    }
+    res.json({ success: true, ticket });
+  }
+);
 
 // ----------------------------------------------------
 // TEST COMPANION / MATCHMAKER SIMULATOR

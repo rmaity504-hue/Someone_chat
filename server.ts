@@ -78,6 +78,38 @@ async function startServer() {
     clearInterval(heartbeatInterval);
   });
 
+  // Ambient Live Online Presence Tracking (Ephemerally throttled at most once every 3s)
+  let lastOnlineBroadcast = 0;
+  let onlineBroadcastTimeout: NodeJS.Timeout | null = null;
+
+  function broadcastOnlineCount() {
+    const activeCount = wss.clients.size;
+    const payload = JSON.stringify({ type: 'online_count', count: activeCount });
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        try {
+          client.send(payload);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  function scheduleOnlineCountBroadcast() {
+    const now = Date.now();
+    if (now - lastOnlineBroadcast >= 3000) {
+      lastOnlineBroadcast = now;
+      broadcastOnlineCount();
+    } else if (!onlineBroadcastTimeout) {
+      onlineBroadcastTimeout = setTimeout(() => {
+        onlineBroadcastTimeout = null;
+        lastOnlineBroadcast = Date.now();
+        broadcastOnlineCount();
+      }, 3000 - (now - lastOnlineBroadcast));
+    }
+  }
+
   wss.on('connection', (ws: WebSocket, req) => {
     const extWs = ws as HardenedWebSocket;
     extWs.isAlive = true;
@@ -87,6 +119,14 @@ async function startServer() {
     ws.on('pong', () => {
       extWs.isAlive = true;
     });
+
+    // Send ambient online presence immediately upon initial connection
+    try {
+      ws.send(JSON.stringify({ type: 'online_count', count: wss.clients.size }));
+    } catch {
+      // ignore
+    }
+    scheduleOnlineCountBroadcast();
 
     // Parse token from query string if available
     try {
@@ -318,6 +358,19 @@ async function startServer() {
             }
             break;
 
+          case 'connection:keep_in_touch':
+          case 'room:keep_in_touch':
+            if (data?.roomId) {
+              matchmaker.handleKeepInTouch(currentUserId, data.roomId);
+            }
+            break;
+
+          case 'session:direct_start':
+            if (data?.partnerId) {
+              matchmaker.createDirectSession(currentUserId, data.partnerId);
+            }
+            break;
+
           case 'report:create':
             if (data?.reportedUserId && data?.category && data?.details) {
               db.createReport(
@@ -398,11 +451,17 @@ async function startServer() {
       if (extWs.authenticatedUserId) {
         matchmaker.unregisterClient(extWs.authenticatedUserId, ws);
       }
+      scheduleOnlineCountBroadcast();
     });
 
     ws.on('error', (err) => {
       console.error('WebSocket error:', err);
     });
+  });
+
+  // Ephemeral live online presence endpoint
+  app.get('/api/presence', (req, res) => {
+    res.json({ count: wss.clients.size });
   });
 
   // Vite middleware for development vs static build for production

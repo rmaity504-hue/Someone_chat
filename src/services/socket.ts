@@ -140,6 +140,9 @@ class SocketService {
         if (this.ws !== socket) return;
         try {
           const payload = JSON.parse(event.data);
+          if (payload.type) {
+            this.dispatch(payload.type, payload);
+          }
           const { event: ev, data } = payload;
           if (ev) {
             this.dispatch(ev, data);

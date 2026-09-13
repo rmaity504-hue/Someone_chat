@@ -15,6 +15,7 @@ import {
   SkipForward,
 } from 'lucide-react';
 import { ReportModal } from './ReportModal.js';
+import { IcebreakerModal } from './IcebreakerModal.js';
 import { useSoundMute } from '../utils/audioHaptics.js';
 
 export const ChatView: React.FC = () => {
@@ -37,6 +38,7 @@ export const ChatView: React.FC = () => {
 
   const [input, setInput] = useState('');
   const [showReport, setShowReport] = useState(false);
+  const [showIcebreakers, setShowIcebreakers] = useState(false);
   const [confirmBlock, setConfirmBlock] = useState(false);
   const [reminderDismissed, setReminderDismissed] = useState(false);
   const [simulatingAction, setSimulatingAction] = useState<string | null>(null);
@@ -380,9 +382,24 @@ export const ChatView: React.FC = () => {
       {/* Input Form */}
       <form
         onSubmit={handleSend}
-        className="p-3 sm:p-3.5 border-t border-[#E7E0D8] bg-[#FAF8F5]/95 backdrop-blur-xs flex items-center gap-2"
+        className="p-3 sm:p-3.5 border-t border-[#E7E0D8] bg-[#FAF8F5]/95 backdrop-blur-xs flex items-center gap-2 relative"
         id="chat-input-form"
       >
+        <button
+          id="chat-icebreaker-btn"
+          type="button"
+          onClick={() => setShowIcebreakers((prev) => !prev)}
+          className={`p-2.5 rounded-full border transition-all cursor-pointer shadow-2xs ${
+            showIcebreakers
+              ? 'bg-[#E8C7BC] text-[#C86D51] border-[#C86D51]'
+              : 'bg-[#F5F2EB] text-[#8C827A] hover:text-[#C86D51] border-[#E7E0D8] hover:bg-[#FAF8F5]'
+          }`}
+          title="Spark a thought (Icebreakers)"
+          aria-label="Spark a thought"
+        >
+          <Sparkles className="w-4 h-4" />
+        </button>
+
         <input
           id="chat-input"
           type="text"
@@ -405,6 +422,20 @@ export const ChatView: React.FC = () => {
           <Send className="w-4 h-4" />
         </button>
       </form>
+
+      {/* Icebreaker / Thought Generator Modal */}
+      <IcebreakerModal
+        isOpen={showIcebreakers}
+        onClose={() => setShowIcebreakers(false)}
+        onSelectPrompt={(prompt) => {
+          setInput(prompt);
+          setShowIcebreakers(false);
+          setTimeout(() => {
+            const el = document.getElementById('chat-input') as HTMLInputElement | null;
+            el?.focus();
+          }, 50);
+        }}
+      />
 
       {/* Report Modal */}
       <ReportModal

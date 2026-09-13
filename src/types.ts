@@ -187,3 +187,20 @@ export interface AdminStats {
   totalConversationsCompleted: number;
   totalMutualFriendships: number;
 }
+
+export type SupportTicketCategory = 'Bug' | 'Harassment Report' | 'Account Issue' | 'Feedback';
+export type SupportTicketStatus = 'open' | 'resolved' | 'dismissed';
+
+export interface SupportTicketRecord {
+  id: string;
+  userId?: string | null;
+  userEmail?: string;
+  userDisplayName?: string;
+  category: SupportTicketCategory;
+  subject: string;
+  message: string;
+  status: SupportTicketStatus;
+  createdAt: number;
+  resolvedAt?: number;
+  adminNotes?: string;
+}

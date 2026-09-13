@@ -15,6 +15,9 @@ import {
   SessionRecord,
   CompletedSessionRecord,
   PasswordResetRecord,
+  SupportTicketRecord,
+  SupportTicketCategory,
+  SupportTicketStatus,
 } from '../src/types.js';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -103,6 +106,7 @@ interface DatabaseSchema {
   flags: Record<string, ModerationFlagRecord>;
   moderationRecords: Record<string, ModerationRecord>;
   appeals: Record<string, AppealRecord>;
+  supportTickets: Record<string, SupportTicketRecord>;
   bannedIps: Record<string, { ip: string; reason: string; createdAt: number }>;
   conversationsCompletedCount: number;
 }
@@ -118,6 +122,7 @@ class Storage {
     flags: {},
     moderationRecords: {},
     appeals: {},
+    supportTickets: {},
     bannedIps: {},
     conversationsCompletedCount: 0,
   };
@@ -155,6 +160,7 @@ class Storage {
           flags: parsed.flags || {},
           moderationRecords: parsed.moderationRecords || {},
           appeals: parsed.appeals || {},
+          supportTickets: parsed.supportTickets || {},
           bannedIps: parsed.bannedIps || {},
           conversationsCompletedCount: parsed.conversationsCompletedCount || 0,
         };
@@ -243,6 +249,22 @@ class Storage {
         ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token VARCHAR(128);
         ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token_expires_at BIGINT;
         CREATE INDEX IF NOT EXISTS idx_users_verification_token ON users(verification_token);
+
+        CREATE TABLE IF NOT EXISTS support_tickets (
+          id VARCHAR(64) PRIMARY KEY,
+          user_id VARCHAR(64),
+          user_email VARCHAR(255),
+          user_display_name VARCHAR(64),
+          category VARCHAR(64) NOT NULL,
+          subject TEXT NOT NULL,
+          message TEXT NOT NULL,
+          status VARCHAR(32) DEFAULT 'open',
+          created_at BIGINT NOT NULL,
+          resolved_at BIGINT,
+          admin_notes TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_support_tickets_status ON support_tickets(status);
+        CREATE INDEX IF NOT EXISTS idx_support_tickets_created_at ON support_tickets(created_at);
       `)
       .catch((e) => console.warn('[DATABASE] schema upgrade check:', e?.message || e));
   }
@@ -305,6 +327,41 @@ class Storage {
           };
         }
       } catch (rErr) {
+        // Table may not exist yet on initial run
+      }
+
+      try {
+        const ticketsRes = await this.pgPool.query('SELECT * FROM support_tickets ORDER BY created_at DESC');
+        for (const row of ticketsRes.rows) {
+          this.data.supportTickets[row.id] = {
+            id: row.id,
+            userId: row.user_id,
+            userEmail: row.user_email || undefined,
+            userDisplayName: row.user_display_name || undefined,
+            category: row.category,
+            subject: row.subject,
+            message: row.message,
+            status: row.status,
+            createdAt: Number(row.created_at),
+            resolvedAt: row.resolved_at ? Number(row.resolved_at) : undefined,
+            adminNotes: row.admin_notes || undefined,
+          };
+        }
+      } catch (tErr) {
+        // Table may not exist yet on initial run
+      }
+
+      try {
+        const friendshipsRes = await this.pgPool.query('SELECT * FROM friendships');
+        for (const row of friendshipsRes.rows) {
+          this.data.friendships[row.id] = {
+            id: row.id,
+            user1Id: row.user1_id,
+            user2Id: row.user2_id,
+            createdAt: Number(row.created_at),
+          };
+        }
+      } catch (fErr) {
         // Table may not exist yet on initial run
       }
     } catch (err) {
@@ -1423,6 +1480,16 @@ class Storage {
       createdAt: Date.now(),
     };
     this.scheduleSave();
+
+    if (this.pgPool) {
+      this.pgPool
+        .query(
+          'INSERT INTO friendships (id, user1_id, user2_id, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING',
+          [id, user1Id, user2Id, Date.now()]
+        )
+        .catch((e) => console.warn('[DATABASE] Postgres friendship insert warning:', e?.message || e));
+    }
+
     return true;
   }
 
@@ -1436,6 +1503,15 @@ class Storage {
       }
     }
     this.scheduleSave();
+
+    if (this.pgPool) {
+      this.pgPool
+        .query(
+          'DELETE FROM friendships WHERE (user1_id = $1 AND user2_id = $2) OR (user1_id = $2 AND user2_id = $1)',
+          [user1Id, user2Id]
+        )
+        .catch((e) => console.warn('[DATABASE] Postgres friendship delete warning:', e?.message || e));
+    }
   }
 
   // ----------------------------------------------------
@@ -1719,6 +1795,83 @@ class Storage {
 
   getAllUsersList(): PrivateUserRecord[] {
     return Object.values(this.data.users);
+  }
+
+  // ----------------------------------------------------
+  // Support & Admin Contact Tickets
+  // ----------------------------------------------------
+  createSupportTicket(params: {
+    userId?: string | null;
+    userEmail?: string;
+    userDisplayName?: string;
+    category: SupportTicketCategory;
+    subject: string;
+    message: string;
+  }): SupportTicketRecord {
+    const id = 'ticket_' + crypto.randomBytes(8).toString('hex');
+    const ticket: SupportTicketRecord = {
+      id,
+      userId: params.userId || null,
+      userEmail: params.userEmail,
+      userDisplayName: params.userDisplayName,
+      category: params.category,
+      subject: params.subject,
+      message: params.message,
+      status: 'open',
+      createdAt: Date.now(),
+    };
+    this.data.supportTickets[id] = ticket;
+    this.scheduleSave();
+
+    if (this.pgPool) {
+      this.pgPool
+        .query(
+          `INSERT INTO support_tickets (id, user_id, user_email, user_display_name, category, subject, message, status, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [
+            ticket.id,
+            ticket.userId,
+            ticket.userEmail || null,
+            ticket.userDisplayName || null,
+            ticket.category,
+            ticket.subject,
+            ticket.message,
+            ticket.status,
+            ticket.createdAt,
+          ]
+        )
+        .catch((err) => console.error('[DATABASE] Error saving support ticket to PG:', err?.message || err));
+    }
+
+    return ticket;
+  }
+
+  getAllSupportTickets(): SupportTicketRecord[] {
+    return Object.values(this.data.supportTickets).sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  updateSupportTicketStatus(id: string, status: SupportTicketStatus, adminNotes?: string): SupportTicketRecord | undefined {
+    const ticket = this.data.supportTickets[id];
+    if (!ticket) return undefined;
+    ticket.status = status;
+    if (status === 'resolved') {
+      ticket.resolvedAt = Date.now();
+    }
+    if (adminNotes !== undefined) {
+      ticket.adminNotes = adminNotes;
+    }
+    this.scheduleSave();
+
+    if (this.pgPool) {
+      this.pgPool
+        .query(
+          `UPDATE support_tickets SET status = $1, resolved_at = $2, admin_notes = $3 WHERE id = $4`,
+          [ticket.status, ticket.resolvedAt || null, ticket.adminNotes || null, ticket.id]
+        )
+        .catch((err) => console.error('[DATABASE] Error updating support ticket in PG:', err?.message || err));
+    }
+
+    return ticket;
   }
 
   /**

@@ -181,5 +181,23 @@ CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id);
 CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets(token_hash);
 CREATE INDEX IF NOT EXISTS idx_password_resets_expires ON password_resets(expires_at);
 
+-- 12. Support & Admin Contact Tickets
+CREATE TABLE IF NOT EXISTS support_tickets (
+  id VARCHAR(64) PRIMARY KEY,
+  user_id VARCHAR(64),
+  user_email VARCHAR(255),
+  user_display_name VARCHAR(64),
+  category VARCHAR(64) NOT NULL, -- 'Bug', 'Harassment Report', 'Account Issue', 'Feedback'
+  subject TEXT NOT NULL,
+  message TEXT NOT NULL,
+  status VARCHAR(32) DEFAULT 'open', -- 'open', 'resolved', 'dismissed'
+  created_at BIGINT NOT NULL,
+  resolved_at BIGINT,
+  admin_notes TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_support_tickets_status ON support_tickets(status);
+CREATE INDEX IF NOT EXISTS idx_support_tickets_created_at ON support_tickets(created_at);
+
 -- Note: Chat message bodies are intentionally NOT stored in any persistent table
 -- to uphold Someone's core ephemeral text conversation principle.

@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext.js';
 import { motion } from 'motion/react';
 import { Sparkles, MessageSquare, ShieldCheck, Heart, Hash, Plus, X } from 'lucide-react';
+import { socketService } from '../services/socket.js';
 
 interface HomeViewProps {
   onFindSomeone: (topics?: string[]) => void;
@@ -28,6 +29,32 @@ export const HomeView: React.FC<HomeViewProps> = ({
   const { user } = useAuth();
   const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
   const [customTag, setCustomTag] = useState('');
+  const [onlineCount, setOnlineCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    // Initial fetch for presence count
+    fetch('/api/presence')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && typeof data.count === 'number') {
+          setOnlineCount(data.count);
+        }
+      })
+      .catch(() => {});
+
+    // Listen to real-time online_count updates from WebSocket
+    const handleOnlineCount = (data: any) => {
+      if (data && typeof data.count === 'number') {
+        setOnlineCount(data.count);
+      }
+    };
+
+    socketService.on('online_count', handleOnlineCount);
+
+    return () => {
+      socketService.off('online_count', handleOnlineCount);
+    };
+  }, []);
 
   const toggleTopic = (topic: string) => {
     const clean = topic.trim().toLowerCase();
@@ -78,6 +105,25 @@ export const HomeView: React.FC<HomeViewProps> = ({
           >
             There are people awake all over the world.
           </h1>
+
+          {/* Ambient Live Online Presence Counter */}
+          <div className="flex justify-center pt-0.5">
+            <div
+              id="ambient-presence-badge"
+              className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#F5F2EB] border border-[#E7E0D8] text-xs font-medium text-[#5C534D] shadow-2xs"
+            >
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#C86D51] opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-[#C86D51]"></span>
+              </span>
+              <span>
+                {onlineCount && onlineCount > 1
+                  ? `${onlineCount} people awake right now`
+                  : '• quiet atmosphere'}
+              </span>
+            </div>
+          </div>
+
           <p
             id="home-supporting-message"
             className="text-base sm:text-lg md:text-xl text-[#5C534D] font-normal max-w-lg mx-auto leading-relaxed"
@@ -91,12 +137,12 @@ export const HomeView: React.FC<HomeViewProps> = ({
           id="topic-selection-section"
           className="p-4 sm:p-5 bg-[#FAF8F5] border border-[#E7E0D8] rounded-3xl text-left space-y-3 shadow-2xs max-w-lg mx-auto"
         >
-          <div className="flex items-center justify-between">
-            <label className="text-xs font-medium text-[#5C534D] flex items-center gap-1.5">
-              <Hash className="w-3.5 h-3.5 text-[#C86D51]" />
-              <span>Conversation Topics <span className="text-[#8C827A] font-normal">(optional, pick up to 3)</span></span>
+          <div className="flex justify-between items-center w-full gap-2">
+            <label className="text-xs font-medium text-[#5C534D] flex items-center gap-1.5 min-w-0 flex-wrap">
+              <Hash className="w-3.5 h-3.5 text-[#C86D51] shrink-0" />
+              <span className="leading-tight">Conversation Topics <span className="text-[#8C827A] font-normal">(optional, pick up to 3)</span></span>
             </label>
-            <span className="text-[11px] text-[#8C827A]">
+            <span className="text-[11px] text-[#8C827A] shrink-0 font-medium whitespace-nowrap pl-1">
               {selectedTopics.length}/3 selected
             </span>
           </div>
