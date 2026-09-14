@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import http from 'http';
 import path from 'path';
+import fs from 'fs';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createViteServer } from 'vite';
 import { apiRouter } from './server/routes.js';
@@ -32,6 +33,20 @@ async function startServer() {
       return;
     }
     res.redirect('/');
+  });
+
+  // Android Digital Asset Links (TWA verification)
+  app.get('/.well-known/assetlinks.json', (req, res) => {
+    const publicPath = path.join(process.cwd(), 'public', '.well-known', 'assetlinks.json');
+    const distPath = path.join(process.cwd(), 'dist', '.well-known', 'assetlinks.json');
+    const targetPath = fs.existsSync(publicPath) ? publicPath : distPath;
+
+    if (fs.existsSync(targetPath)) {
+      res.setHeader('Content-Type', 'application/json');
+      res.sendFile(targetPath);
+    } else {
+      res.status(404).json({ error: 'assetlinks.json not found' });
+    }
   });
 
   // Health check
@@ -473,7 +488,7 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, { dotfiles: 'allow' }));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });

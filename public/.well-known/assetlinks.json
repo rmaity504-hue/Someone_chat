@@ -1,0 +1,10 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.onrender.someone_chat.twa",
+      "sha256_cert_fingerprints": ["66:C5:00:4B:8C:5D:E1:B6:B8:DE:AE:1C:C7:1A:07:5F:54:75:2B:9A:E7:7D:8B:DC:49:96:51:F0:16:9F:A6:19"]
+    }
+  }
+]
