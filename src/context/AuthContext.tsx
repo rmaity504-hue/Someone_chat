@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import { UserProfile, ChatMessage, Friendship, AdminStats } from '../types.js';
 import { getWebSocketUrl, socketService } from '../services/socket.js';
 import { playMatchChime, playMessageBlip } from '../utils/audioHaptics.js';
+import { subscribeToPushNotifications } from '../utils/pushNotifications.js';
 
 export interface VolunteerRequest {
   offerId: string;
@@ -523,6 +524,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (res.ok) {
         const data = await res.json();
         setUser(data.user);
+
+        // When activating listener mode, subscribe this device to Web Push notifications
+        // so the user receives native alerts when visitors enter the queue while the app is closed.
+        if (active) {
+          subscribeToPushNotifications(token, data.user.role || 'volunteer').catch((err) => {
+            console.warn('[AUTH] Push notification subscription deferred or dismissed:', err);
+          });
+        }
+
         return true;
       }
     } catch (err) {

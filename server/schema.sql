@@ -199,5 +199,20 @@ CREATE TABLE IF NOT EXISTS support_tickets (
 CREATE INDEX IF NOT EXISTS idx_support_tickets_status ON support_tickets(status);
 CREATE INDEX IF NOT EXISTS idx_support_tickets_created_at ON support_tickets(created_at);
 
+-- 13. Web Push Subscriptions for Admin / Listener Alerts
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id VARCHAR(64) PRIMARY KEY,
+  user_id VARCHAR(64),
+  endpoint TEXT UNIQUE NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  role VARCHAR(32) DEFAULT 'listener',
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_push_subs_user_id ON push_subscriptions(user_id);
+CREATE INDEX IF NOT EXISTS idx_push_subs_endpoint ON push_subscriptions(endpoint);
+
 -- Note: Chat message bodies are intentionally NOT stored in any persistent table
 -- to uphold Someone's core ephemeral text conversation principle.

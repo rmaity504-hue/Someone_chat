@@ -204,3 +204,24 @@ export interface SupportTicketRecord {
   resolvedAt?: number;
   adminNotes?: string;
 }
+
+export interface PushSubscriptionKeys {
+  p256dh: string;
+  auth: string;
+}
+
+export interface PushSubscriptionData {
+  endpoint: string;
+  expirationTime?: number | null;
+  keys: PushSubscriptionKeys;
+}
+
+export interface PushSubscriptionRecord {
+  id: string;
+  userId?: string | null;
+  endpoint: string;
+  keys: PushSubscriptionKeys;
+  role?: string;
+  createdAt: number;
+  updatedAt: number;
+}

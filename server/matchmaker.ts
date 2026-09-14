@@ -4,6 +4,7 @@ import { MatchSession, ChatMessage } from '../src/types.js';
 import { SafetyEvaluation, sanitizeOffPlatformContent } from './safety.js';
 import crypto from 'crypto';
 import { simulator, BOT_USER_ID, BOT_NAME } from './simulator.js';
+import { notifyActiveListenersWhenQueueEnters } from './pushNotifications.js';
 
 export interface ConnectedClient {
   userId: string;
@@ -142,6 +143,14 @@ export class Matchmaker {
 
     // Try immediate match
     this.tryMatch(userId);
+
+    // If user is waiting in pool, alert active listeners whose WebSocket is disconnected/backgrounded
+    if (this.waitingPool.has(userId)) {
+      notifyActiveListenersWhenQueueEnters(userId, new Set(this.clients.keys())).catch((err) => {
+        console.error('[Matchmaker] Error alerting listeners of queue entry:', err);
+      });
+    }
+
     return { success: true };
   }
 
@@ -323,7 +332,13 @@ export class Matchmaker {
       );
     });
 
-    if (availableVolunteers.length === 0) return;
+    if (availableVolunteers.length === 0) {
+      // Trigger Web Push notification fallback to backgrounded/disconnected listeners
+      notifyActiveListenersWhenQueueEnters(waitingUserId, new Set(this.clients.keys())).catch((err) => {
+        console.error('[Matchmaker] Error triggering listener push fallback:', err);
+      });
+      return;
+    }
 
     // Pick first available volunteer
     const volunteer = availableVolunteers[0];

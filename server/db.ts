@@ -18,6 +18,7 @@ import {
   SupportTicketRecord,
   SupportTicketCategory,
   SupportTicketStatus,
+  PushSubscriptionRecord,
 } from '../src/types.js';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -107,6 +108,7 @@ interface DatabaseSchema {
   moderationRecords: Record<string, ModerationRecord>;
   appeals: Record<string, AppealRecord>;
   supportTickets: Record<string, SupportTicketRecord>;
+  pushSubscriptions: Record<string, PushSubscriptionRecord>;
   bannedIps: Record<string, { ip: string; reason: string; createdAt: number }>;
   conversationsCompletedCount: number;
 }
@@ -123,6 +125,7 @@ class Storage {
     moderationRecords: {},
     appeals: {},
     supportTickets: {},
+    pushSubscriptions: {},
     bannedIps: {},
     conversationsCompletedCount: 0,
   };
@@ -161,6 +164,7 @@ class Storage {
           moderationRecords: parsed.moderationRecords || {},
           appeals: parsed.appeals || {},
           supportTickets: parsed.supportTickets || {},
+          pushSubscriptions: parsed.pushSubscriptions || {},
           bannedIps: parsed.bannedIps || {},
           conversationsCompletedCount: parsed.conversationsCompletedCount || 0,
         };
@@ -265,6 +269,19 @@ class Storage {
         );
         CREATE INDEX IF NOT EXISTS idx_support_tickets_status ON support_tickets(status);
         CREATE INDEX IF NOT EXISTS idx_support_tickets_created_at ON support_tickets(created_at);
+
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+          id VARCHAR(64) PRIMARY KEY,
+          user_id VARCHAR(64),
+          endpoint TEXT UNIQUE NOT NULL,
+          p256dh TEXT NOT NULL,
+          auth TEXT NOT NULL,
+          role VARCHAR(32) DEFAULT 'listener',
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_push_subs_user_id ON push_subscriptions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_push_subs_endpoint ON push_subscriptions(endpoint);
       `)
       .catch((e) => console.warn('[DATABASE] schema upgrade check:', e?.message || e));
   }
@@ -362,6 +379,26 @@ class Storage {
           };
         }
       } catch (fErr) {
+        // Table may not exist yet on initial run
+      }
+
+      try {
+        const pushRes = await this.pgPool.query('SELECT * FROM push_subscriptions');
+        for (const row of pushRes.rows) {
+          this.data.pushSubscriptions[row.endpoint] = {
+            id: row.id,
+            userId: row.user_id || undefined,
+            endpoint: row.endpoint,
+            keys: {
+              p256dh: row.p256dh,
+              auth: row.auth,
+            },
+            role: row.role || 'listener',
+            createdAt: Number(row.created_at),
+            updatedAt: Number(row.updated_at),
+          };
+        }
+      } catch (pErr) {
         // Table may not exist yet on initial run
       }
     } catch (err) {
@@ -1872,6 +1909,60 @@ class Storage {
     }
 
     return ticket;
+  }
+
+  // ----------------------------------------------------
+  // Push Notification Subscriptions
+  // ----------------------------------------------------
+  savePushSubscription(sub: PushSubscriptionRecord): void {
+    this.data.pushSubscriptions[sub.endpoint] = { ...sub };
+    this.scheduleSave();
+
+    if (this.pgPool) {
+      this.pgPool
+        .query(
+          `INSERT INTO push_subscriptions (id, user_id, endpoint, p256dh, auth, role, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (endpoint) DO UPDATE SET
+             user_id = EXCLUDED.user_id,
+             p256dh = EXCLUDED.p256dh,
+             auth = EXCLUDED.auth,
+             role = EXCLUDED.role,
+             updated_at = EXCLUDED.updated_at`,
+          [
+            sub.id,
+            sub.userId || null,
+            sub.endpoint,
+            sub.keys.p256dh,
+            sub.keys.auth,
+            sub.role || 'listener',
+            sub.createdAt,
+            sub.updatedAt,
+          ]
+        )
+        .catch((err) => console.error('[DATABASE] Error saving push subscription to PG:', err?.message || err));
+    }
+  }
+
+  deletePushSubscription(endpoint: string): void {
+    if (this.data.pushSubscriptions[endpoint]) {
+      delete this.data.pushSubscriptions[endpoint];
+      this.scheduleSave();
+    }
+
+    if (this.pgPool) {
+      this.pgPool
+        .query('DELETE FROM push_subscriptions WHERE endpoint = $1', [endpoint])
+        .catch((err) => console.error('[DATABASE] Error deleting push subscription from PG:', err?.message || err));
+    }
+  }
+
+  getPushSubscriptions(): PushSubscriptionRecord[] {
+    return Object.values(this.data.pushSubscriptions);
+  }
+
+  getPushSubscriptionsByUserId(userId: string): PushSubscriptionRecord[] {
+    return Object.values(this.data.pushSubscriptions).filter((s) => s.userId === userId);
   }
 
   /**

@@ -14,8 +14,18 @@ import {
   X,
   Check,
   MessageSquare,
+  Bell,
+  BellRing,
+  Send,
 } from 'lucide-react';
 import { AdminStats, ReportRecord, ModerationFlagRecord, AppealRecord, SupportTicketRecord, SupportTicketStatus } from '../types.js';
+import {
+  checkPushSubscriptionStatus,
+  subscribeToPushNotifications,
+  unsubscribeFromPushNotifications,
+  sendTestPushNotification,
+  PushStatus,
+} from '../utils/pushNotifications.js';
 
 interface AdminDashboardProps {
   isOpen: boolean;
@@ -35,6 +45,61 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose 
   const [ticketStatusFilter, setTicketStatusFilter] = useState<'all' | 'open' | 'resolved' | 'dismissed'>('all');
   const [loading, setLoading] = useState(false);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+
+  // Web Push Notification State
+  const [pushStatus, setPushStatus] = useState<PushStatus | null>(null);
+  const [pushLoading, setPushLoading] = useState(false);
+  const [pushMessage, setPushMessage] = useState<{ text: string; isError?: boolean } | null>(null);
+
+  const refreshPushStatus = async () => {
+    try {
+      const status = await checkPushSubscriptionStatus();
+      setPushStatus(status);
+    } catch (err) {
+      console.warn('Error fetching push status:', err);
+    }
+  };
+
+  const handleTogglePushNotifications = async () => {
+    setPushLoading(true);
+    setPushMessage(null);
+    try {
+      if (pushStatus?.isSubscribed) {
+        await unsubscribeFromPushNotifications();
+        setPushMessage({ text: 'Native device alerts disabled on this device.' });
+      } else {
+        const res = await subscribeToPushNotifications(token, user?.role || 'admin');
+        if (res.success) {
+          setPushMessage({ text: 'Native device alerts activated! You will receive a device notification when someone enters the queue while the app is closed.' });
+        } else {
+          setPushMessage({ text: res.error || 'Failed to activate device alerts.', isError: true });
+        }
+      }
+      await refreshPushStatus();
+    } catch (err: any) {
+      setPushMessage({ text: err?.message || 'Error updating device alerts.', isError: true });
+    } finally {
+      setPushLoading(false);
+    }
+  };
+
+  const handleSendTestPush = async () => {
+    if (!token) return;
+    setPushLoading(true);
+    setPushMessage(null);
+    try {
+      const res = await sendTestPushNotification(token);
+      if (res.success) {
+        setPushMessage({ text: 'Test push notification dispatched! Check your device notifications.' });
+      } else {
+        setPushMessage({ text: res.error || 'Failed to send test push notification.', isError: true });
+      }
+    } catch (err: any) {
+      setPushMessage({ text: err?.message || 'Error testing device notification.', isError: true });
+    } finally {
+      setPushLoading(false);
+    }
+  };
 
   const fetchStats = async () => {
     if (!token) return;
@@ -124,6 +189,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose 
       fetchUsers();
       fetchAppeals();
       fetchTickets();
+      refreshPushStatus();
     }
   }, [isOpen, token, tab]);
 
@@ -357,6 +423,81 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose 
                     {stats?.totalMutualFriendships ?? 0} mutual connections
                   </span>
                 </div>
+              </div>
+
+              {/* Native Device Web Push Alerts Card */}
+              <div className="p-5 bg-white rounded-xl border border-stone-200 shadow-xs space-y-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <div className="p-2.5 rounded-lg bg-[#FAF0E6] text-[#C86D51] mt-0.5">
+                      <BellRing className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-medium text-stone-900 text-sm flex items-center gap-2">
+                        <span>Native Device Alerts (Web Push)</span>
+                        {pushStatus?.isSubscribed ? (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                            Active on this device
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-stone-500 bg-stone-100 px-2 py-0.5 rounded-full">
+                            Inactive
+                          </span>
+                        )}
+                      </h4>
+                      <p className="text-xs text-stone-500 mt-1 max-w-xl">
+                        Receive a native device notification whenever a visitor enters the queue while Someone is closed or in the background:
+                        <span className="block mt-1 font-mono text-[11px] text-stone-700 bg-stone-50 p-1.5 rounded border border-stone-200">
+                          &quot;Someone is awake — A visitor is waiting to talk. Tap to enter the conversation.&quot;
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      id="toggle-admin-push-alerts-btn"
+                      disabled={pushLoading}
+                      onClick={handleTogglePushNotifications}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer flex items-center gap-1.5 ${
+                        pushStatus?.isSubscribed
+                          ? 'bg-stone-100 text-stone-700 hover:bg-stone-200 border border-stone-300'
+                          : 'bg-[#C86D51] text-white hover:bg-[#B55D42]'
+                      } disabled:opacity-50`}
+                    >
+                      <Bell className="w-3.5 h-3.5" />
+                      <span>{pushStatus?.isSubscribed ? 'Disable Alerts' : 'Enable Device Alerts'}</span>
+                    </button>
+
+                    {pushStatus?.isSubscribed && (
+                      <button
+                        type="button"
+                        id="test-admin-push-alerts-btn"
+                        disabled={pushLoading}
+                        onClick={handleSendTestPush}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium bg-stone-100 text-stone-700 hover:bg-stone-200 border border-stone-200 transition-colors cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+                        title="Send a sample notification to this device right now"
+                      >
+                        <Send className="w-3.5 h-3.5" />
+                        <span>Send Test</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {pushMessage && (
+                  <div
+                    className={`p-3 rounded-lg text-xs flex items-center gap-2 ${
+                      pushMessage.isError
+                        ? 'bg-rose-50 text-rose-800 border border-rose-200'
+                        : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                    }`}
+                  >
+                    <span>{pushMessage.text}</span>
+                  </div>
+                )}
               </div>
 
               {/* Ban Evasion & System Integrity Indicators */}
