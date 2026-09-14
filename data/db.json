@@ -373,11 +373,13 @@
       "verificationCode": null,
       "verificationAttempts": 0,
       "isAgeConfirmed": true,
+      "securityQuestion": "What made you a fan of Rock",
+      "securityAnswerHash": "$2b$10$lBduGaYrT4Pk5AO.QDn/4umQeHkfygAAUa2PSmRk1PSUwwpcgvbh6",
       "role": "admin",
       "status": "offline",
       "safetyAcknowledged": true,
       "isVolunteer": true,
-      "volunteerActive": false,
+      "volunteerActive": true,
       "createdAt": 1789242522368,
       "violationCount": 0,
       "recentPartnerIds": [],
@@ -420,6 +422,48 @@
       "createdAt": 1789291515027,
       "violationCount": 0,
       "registeredIp": "127.0.0.1",
+      "recentPartnerIds": [],
+      "blockedUserIds": []
+    },
+    "usr_aa93c49f004225e2": {
+      "id": "usr_aa93c49f004225e2",
+      "email": "theteacher050494@gmail.com",
+      "passwordHash": "scrypt$N=16384,r=8,p=1$a6a8ef88c4eb0a87e407239a0d7856f2$5c354e1665037105a95dd0ca45ebca5f9c7566d47ee76a7c0afdbdcf9abd0bd51d0f4aa38508023156351d8d859c9939bf89360768eb085a939760c9450e9215",
+      "displayName": "Anamika",
+      "isVerified": true,
+      "verificationCode": null,
+      "verificationAttempts": 0,
+      "isAgeConfirmed": true,
+      "securityQuestion": "Your favourite anime",
+      "securityAnswerHash": "$2b$10$QYHIHaVClZubpnrc2J7QSuIT/HFsFH9T8/L3XCpjB.A547qzJVIu6",
+      "role": "user",
+      "status": "offline",
+      "safetyAcknowledged": false,
+      "isVolunteer": false,
+      "volunteerActive": false,
+      "createdAt": 1789329027411,
+      "violationCount": 0,
+      "registeredIp": "49.37.2.116",
+      "recentPartnerIds": [],
+      "blockedUserIds": []
+    },
+    "usr_b0134056ae03a014": {
+      "id": "usr_b0134056ae03a014",
+      "email": "thesir646@gmail.com",
+      "passwordHash": "scrypt$N=16384,r=8,p=1$5ad74a8c062e016881957038a6f30ae6$27107e149ddac5f05f9261ee1f708ccaa5c06ac03d035ec3b4195ab98efcd821c20027aa31b462c7f13edd002c00c1039196d355b10c9294c50aafa91e866fb2",
+      "displayName": "River",
+      "isVerified": true,
+      "verificationCode": null,
+      "verificationAttempts": 0,
+      "isAgeConfirmed": true,
+      "role": "user",
+      "status": "offline",
+      "safetyAcknowledged": false,
+      "isVolunteer": false,
+      "volunteerActive": false,
+      "createdAt": 1789327473132,
+      "violationCount": 0,
+      "registeredIp": "157.40.117.80",
       "recentPartnerIds": [],
       "blockedUserIds": []
     }
@@ -688,6 +732,31 @@
     }
   },
   "appeals": {},
+  "supportTickets": {
+    "ticket_f246d67ece178a13": {
+      "id": "ticket_f246d67ece178a13",
+      "userId": null,
+      "category": "Feedback",
+      "subject": "Architecture Inquiry",
+      "message": "Checking that the in-app ticketing pipeline works as intended.",
+      "status": "open",
+      "createdAt": 1789328950737
+    }
+  },
+  "pushSubscriptions": {
+    "https://fcm.googleapis.com/fcm/send/f9vyuWxcUjU:APA91bGE4gyULKHwLAzUYfhyzcld17VoTI-lN1pXmooQwdqbZaXkZAB8aBzTzZTNpmVPvPCsavvXjOFIvsDxIXlIiQq3R2X3aCN8qUaCtxA2Uj-On5ZiwghuenAp1OeZF2PTA4sjxS2r": {
+      "id": "sub_bbf0e45e348c1964",
+      "userId": "usr_admin_9a4bacf9bf88",
+      "endpoint": "https://fcm.googleapis.com/fcm/send/f9vyuWxcUjU:APA91bGE4gyULKHwLAzUYfhyzcld17VoTI-lN1pXmooQwdqbZaXkZAB8aBzTzZTNpmVPvPCsavvXjOFIvsDxIXlIiQq3R2X3aCN8qUaCtxA2Uj-On5ZiwghuenAp1OeZF2PTA4sjxS2r",
+      "keys": {
+        "p256dh": "BH4p7HYFCTrD8h5rqGiTbSDYyk5rXo4Dar3xZT_hX_YZt3kwsi3QfLL-fqSvW2zr8MDfaRZNBLingwbEKQahCNU",
+        "auth": "A-gMueZ87Ej3YFGv7yx7IA"
+      },
+      "role": "admin",
+      "createdAt": 1789384655472,
+      "updatedAt": 1789384655472
+    }
+  },
   "bannedIps": {},
   "conversationsCompletedCount": 3
 }

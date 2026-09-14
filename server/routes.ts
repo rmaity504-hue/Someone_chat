@@ -587,12 +587,28 @@ apiRouter.post('/volunteer/toggle', volunteerLimiter, authenticate, (req: Reques
 // WEB PUSH NOTIFICATIONS FOR ADMIN / LISTENERS
 // ----------------------------------------------------
 
+// Direct VAPID Public Key endpoints (/api/push/vapid-public-key and /api/notifications/vapid-public-key)
+apiRouter.get('/push/vapid-public-key', (_req: Request, res: Response): void => {
+  res.json({
+    publicKey:
+      process.env.VAPID_PUBLIC_KEY ||
+      'BMzvZylzxhzL7LmFSW7Swj7GGariKK7WAWbk-Q2ESt1apjR2Ek9Rb1tfLSwoli3ww4IUfIlR1-VWATH1tAFJCBw',
+  });
+});
+
 apiRouter.get('/notifications/vapid-public-key', (_req: Request, res: Response): void => {
   try {
-    const key = getVapidPublicKey();
+    const key =
+      process.env.VAPID_PUBLIC_KEY ||
+      getVapidPublicKey() ||
+      'BMzvZylzxhzL7LmFSW7Swj7GGariKK7WAWbk-Q2ESt1apjR2Ek9Rb1tfLSwoli3ww4IUfIlR1-VWATH1tAFJCBw';
     res.json({ publicKey: key });
   } catch (err: any) {
-    res.status(500).json({ error: 'Failed to retrieve VAPID key' });
+    res.json({
+      publicKey:
+        process.env.VAPID_PUBLIC_KEY ||
+        'BMzvZylzxhzL7LmFSW7Swj7GGariKK7WAWbk-Q2ESt1apjR2Ek9Rb1tfLSwoli3ww4IUfIlR1-VWATH1tAFJCBw',
+    });
   }
 });
 

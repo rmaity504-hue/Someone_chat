@@ -19,8 +19,10 @@ import {
 } from 'lucide-react';
 import { ReportModal } from './ReportModal.js';
 import { IcebreakerModal } from './IcebreakerModal.js';
+import { CrisisSupportModal } from './CrisisSupportModal.js';
 import { useSoundMute } from '../utils/feedback.js';
 import { filterChatMessage } from '../utils/privacyFilter.js';
+import { checkCrisisKeywords } from '../utils/safetyInterceptor.js';
 
 const GENTLE_PUSH_PROMPTS = [
   "What's a thought you haven't said out loud today?",
@@ -51,6 +53,8 @@ export const ChatView: React.FC = () => {
   const [input, setInput] = useState('');
   const [showReport, setShowReport] = useState(false);
   const [showIcebreakers, setShowIcebreakers] = useState(false);
+  const [showCrisisModal, setShowCrisisModal] = useState(false);
+  const [pendingCrisisMessage, setPendingCrisisMessage] = useState<string | null>(null);
   const [confirmBlock, setConfirmBlock] = useState(false);
   const [reminderDismissed, setReminderDismissed] = useState(false);
   const [simulatingAction, setSimulatingAction] = useState<string | null>(null);
@@ -220,12 +224,34 @@ export const ChatView: React.FC = () => {
 
     setPrivacyToast(null);
 
+    // Discreet Client-Side Crisis Interceptor (Zero-Logging)
+    if (checkCrisisKeywords(filterResult.sanitizedText)) {
+      setPendingCrisisMessage(filterResult.sanitizedText);
+      setShowCrisisModal(true);
+      return;
+    }
+
     // Immediately stop emitting typing upon sending a message
     stopTyping();
 
     // Send the sanitized message (phone numbers masked)
     sendMessage(filterResult.sanitizedText);
     setInput('');
+  };
+
+  const handleContinueAfterCrisis = () => {
+    setShowCrisisModal(false);
+    if (pendingCrisisMessage) {
+      stopTyping();
+      sendMessage(pendingCrisisMessage);
+      setPendingCrisisMessage(null);
+      setInput('');
+    }
+  };
+
+  const handleDismissCrisisModal = () => {
+    setShowCrisisModal(false);
+    setPendingCrisisMessage(null);
   };
 
   const handleSimulateAction = async (action: 'violation' | 'clean_chat') => {
@@ -425,7 +451,7 @@ export const ChatView: React.FC = () => {
 
       {/* Message Stream */}
       <div
-        className="flex-1 min-h-0 p-4 sm:p-5 overflow-y-auto overscroll-contain space-y-4"
+        className="flex-1 min-h-0 p-4 sm:p-5 overflow-y-auto overscroll-contain scroll-container space-y-4"
         id="chat-message-list"
       >
         {messages.length === 0 ? (
@@ -589,6 +615,13 @@ export const ChatView: React.FC = () => {
         targetUserId={activeSession.partnerId}
         targetDisplayName={activeSession.partnerDisplayName}
         roomId={activeSession.roomId}
+      />
+
+      {/* Discreet Client-Side Crisis Support Modal */}
+      <CrisisSupportModal
+        isOpen={showCrisisModal}
+        onClose={handleDismissCrisisModal}
+        onContinueChat={handleContinueAfterCrisis}
       />
 
       {/* Block Confirmation Dialog */}

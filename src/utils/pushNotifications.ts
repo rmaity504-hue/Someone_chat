@@ -1,10 +1,14 @@
 // Client-side Web Push Notification Manager
 
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
+export function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const base64 = (base64String + padding)
+    .replace(/-/g, '+')
+    .replace(/_/g, '/');
+
   const rawData = window.atob(base64);
   const outputArray = new Uint8Array(rawData.length);
+
   for (let i = 0; i < rawData.length; ++i) {
     outputArray[i] = rawData.charCodeAt(i);
   }
@@ -69,11 +73,20 @@ export async function subscribeToPushNotifications(
     }
 
     // 2. Fetch server VAPID public key
-    const keyRes = await fetch('/api/notifications/vapid-public-key');
-    if (!keyRes.ok) {
-      throw new Error('Failed to fetch VAPID public key from server');
+    let publicKey = '';
+    const res = await fetch('/api/push/vapid-public-key');
+    if (res.ok) {
+      const data = await res.json();
+      publicKey = data.publicKey;
+    } else {
+      const fallbackRes = await fetch('/api/notifications/vapid-public-key');
+      if (!fallbackRes.ok) {
+        throw new Error('Failed to fetch VAPID public key from server');
+      }
+      const fallbackData = await fallbackRes.json();
+      publicKey = fallbackData.publicKey;
     }
-    const { publicKey } = await keyRes.json();
+
     if (!publicKey) {
       throw new Error('Empty VAPID public key received');
     }
@@ -84,10 +97,10 @@ export async function subscribeToPushNotifications(
     // 4. Retrieve existing or create new subscription
     let subscription = await registration.pushManager.getSubscription();
     if (!subscription) {
-      const convertedKey = urlBase64ToUint8Array(publicKey);
+      const applicationServerKey = urlBase64ToUint8Array(publicKey);
       subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: convertedKey,
+        applicationServerKey,
       });
     }
 

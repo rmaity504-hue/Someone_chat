@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { SocketProvider } from './context/SocketContext.js';
 import { AuthProvider, useAuth } from './context/AuthContext.js';
 import { Navbar } from './components/Navbar.js';
@@ -45,6 +45,22 @@ function MainApp() {
   const [aboutInitialTab, setAboutInitialTab] = useState<'philosophy' | 'retention' | 'safety'>('philosophy');
   const [contactAdminOpen, setContactAdminOpen] = useState(false);
   const [pendingTopics, setPendingTopics] = useState<string[]>([]);
+
+  // 4. Disable right-click / context menu globally across native shell (allow only inside editable text inputs/textareas)
+  useEffect(() => {
+    const handleContextMenu = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+      e.preventDefault();
+    };
+
+    window.addEventListener('contextmenu', handleContextMenu);
+    return () => {
+      window.removeEventListener('contextmenu', handleContextMenu);
+    };
+  }, []);
 
   const handleFindSomeone = (topics?: string[]) => {
     const activeTopics = topics || [];

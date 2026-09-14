@@ -172,7 +172,7 @@ export const FriendsModal: React.FC<FriendsModalProps> = ({
             </p>
           </div>
         ) : (
-          <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+          <div className="space-y-2 max-h-72 overflow-y-auto scroll-container pr-1">
             {connections.map((conn) => (
               <div
                 key={conn.id || conn.partnerId}

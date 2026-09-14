@@ -108,7 +108,7 @@ export const AboutPhilosophyModal: React.FC<AboutPhilosophyModalProps> = ({
         </div>
 
         {/* Body Content */}
-        <div className="overflow-y-auto py-5 space-y-5 text-[#3D352E] text-sm leading-relaxed pr-1">
+        <div className="overflow-y-auto scroll-container py-5 space-y-5 text-[#3D352E] text-sm leading-relaxed pr-1">
           {activeTab === 'philosophy' && (
             <div className="space-y-4 animate-in fade-in duration-200">
               <div className="bg-[#FAF0E6] p-4 rounded-2xl border border-[#E7D7C5]">

@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import webpush from 'web-push';
 import { db } from './db.js';
 import { PushSubscriptionRecord, PushSubscriptionData } from '../src/types.js';
+import { VAPID_CONFIG } from './config.js';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const VAPID_FILE = path.join(DATA_DIR, 'vapid.json');
@@ -45,13 +46,15 @@ function initVapid(): VapidKeys {
       console.warn('[PUSH] Error checking existing VAPID file:', err);
     }
 
-    // If still not available, generate zero-cost standard VAPID keypair
+    // If still not available from file, use standard configured VAPID keypair
     if (!vapidKeys) {
-      console.log('[PUSH] Generating zero-cost VAPID keypair for Web Push Notifications...');
-      const generated = webpush.generateVAPIDKeys();
       vapidKeys = {
-        publicKey: generated.publicKey,
-        privateKey: generated.privateKey,
+        publicKey:
+          process.env.VAPID_PUBLIC_KEY ||
+          'BMzvZylzxhzL7LmFSW7Swj7GGariKK7WAWbk-Q2ESt1apjR2Ek9Rb1tfLSwoli3ww4IUfIlR1-VWATH1tAFJCBw',
+        privateKey:
+          process.env.VAPID_PRIVATE_KEY ||
+          'tZ9kly49ai8KYQQU_11mVSk6VLjzUSHK-xH6vgncKak',
       };
 
       try {
@@ -66,9 +69,17 @@ function initVapid(): VapidKeys {
     }
   }
 
-  const subject = process.env.VAPID_SUBJECT || 'mailto:admin@someone.chat';
+  const subject = process.env.VAPID_SUBJECT || 'mailto:someone.chat.app@gmail.com';
+  const publicKey =
+    process.env.VAPID_PUBLIC_KEY ||
+    'BMzvZylzxhzL7LmFSW7Swj7GGariKK7WAWbk-Q2ESt1apjR2Ek9Rb1tfLSwoli3ww4IUfIlR1-VWATH1tAFJCBw';
+  const privateKey =
+    process.env.VAPID_PRIVATE_KEY ||
+    'tZ9kly49ai8KYQQU_11mVSk6VLjzUSHK-xH6vgncKak';
+
   try {
-    webpush.setVapidDetails(subject, vapidKeys.publicKey, vapidKeys.privateKey);
+    webpush.setVapidDetails(subject, publicKey, privateKey);
+    vapidKeys = { publicKey, privateKey };
     console.log('[PUSH] Web Push configured with VAPID Subject:', subject);
   } catch (err) {
     console.error('[PUSH] Error setting VAPID details:', err);
