@@ -305,8 +305,27 @@ async function startServer() {
                 return;
               }
 
+              // Sanctuary Data Filter: Block external links
+              const URL_CHECK = /(?:https?:\/\/|ftps?:\/\/|www\.)[^\s/$.?#].[^\s]*|\b[a-zA-Z0-9-]+\.(?:com|org|net|io|co|app|me|dev|xyz|info|edu|gov|site|online|link|ai|tv|gg|club)\b(?:\/[^\s]*)?/i;
+              if (URL_CHECK.test(text)) {
+                ws.send(
+                  JSON.stringify({
+                    event: 'chat:warning',
+                    data: { message: 'Links are kept out to maintain a quiet sanctuary.' },
+                  })
+                );
+                return;
+              }
+
+              // Sanctuary Data Filter: Redact 10+ digit phone numbers
+              const PHONE_CHECK = /(?:\+?\d{1,3}[\s.-]?)?\(?\d{2,4}\)?[\s.-]?\d{2,4}[\s.-]?\d{3,5}\b|\b(?:\+?\d[\s().-]*){10,}\d\b/g;
+              const safeText = text.replace(PHONE_CHECK, (match) => {
+                const digits = (match.match(/\d/g) || []).length;
+                return digits >= 10 ? '[redacted]' : match;
+              });
+
               // Server-side safety assessment
-              const safety = evaluateMessageSafety(text);
+              const safety = evaluateMessageSafety(safeText);
 
               if (safety.isViolating && safety.isSeriousSexualViolation) {
                 // Immediate enforcement for clear serious violations:
@@ -329,17 +348,17 @@ async function startServer() {
                   displayName: user ? user.displayName : 'Unknown',
                   roomId: data.roomId,
                   triggerCategory: safety.category || 'violation',
-                  flaggedText: text,
+                  flaggedText: safeText,
                   severity: safety.severity === 'severe' || safety.severity === 'high' ? 'high' : 'medium',
                 });
 
                 if (safety.severity === 'severe' || safety.severity === 'high') {
-                  matchmaker.handleSafetyViolation(currentUserId, data.roomId, safety, text);
+                  matchmaker.handleSafetyViolation(currentUserId, data.roomId, safety, safeText);
                   return;
                 }
               }
 
-              matchmaker.sendMessage(currentUserId, data.roomId, text);
+              matchmaker.sendMessage(currentUserId, data.roomId, safeText);
             }
             break;
 
@@ -358,6 +377,18 @@ async function startServer() {
           case 'chat:typing':
             if (data?.roomId && typeof data?.isTyping === 'boolean') {
               matchmaker.handleTyping(currentUserId, data.roomId, data.isTyping);
+            }
+            break;
+
+          case 'TYPING_START':
+            if (data?.roomId) {
+              matchmaker.handleTyping(currentUserId, data.roomId, true);
+            }
+            break;
+
+          case 'TYPING_STOP':
+            if (data?.roomId) {
+              matchmaker.handleTyping(currentUserId, data.roomId, false);
             }
             break;
 

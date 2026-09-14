@@ -15,8 +15,11 @@ import {
   MessageSquare,
   MessageCircle,
   AlertCircle,
+  Bell,
+  BellOff,
 } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton.js';
+import { useSoundMute } from '../utils/feedback.js';
 
 interface NavbarProps {
   onOpenAuth: () => void;
@@ -42,6 +45,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onChatNow,
 }) => {
   const { user, logout, toggleVolunteer } = useAuth();
+  const { isMuted, toggleMute } = useSoundMute();
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -69,7 +73,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   }, [profileMenuOpen, mobileMenuOpen]);
 
   return (
-    <header className="w-full border-b border-[#E7E0D8] bg-[#FAF8F5]/90 backdrop-blur-md sticky top-0 z-30 transition-colors">
+    <header className="w-full border-b border-[#E7E0D8]/80 bg-[#F6F3EE]/85 backdrop-blur-md sticky top-0 z-30 transition-colors">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
         {/* Brand and primary desktop links */}
         <div className="flex items-center gap-6">
@@ -81,10 +85,17 @@ export const Navbar: React.FC<NavbarProps> = ({
               e.stopPropagation();
               onChatNow?.();
             }}
-            className="text-xl font-serif font-medium tracking-tight text-[#2D2723] hover:text-[#C86D51] flex items-center gap-2.5 transition-colors cursor-pointer"
+            className="text-xl font-serif font-medium tracking-tight text-[#2D2723] hover:text-[#C86D51] flex items-center gap-2.5 transition-colors cursor-pointer group"
           >
-            <span className="w-2.5 h-2.5 rounded-full bg-[#C86D51] shadow-xs"></span>
-            Someone
+            <div className="w-8 h-8 rounded-lg overflow-hidden border border-[#E7E0D8] shadow-xs shrink-0 flex items-center justify-center bg-[#F6F3EE] group-hover:border-[#C86D51]/40 transition-colors">
+              <img
+                src="/icon-192.png"
+                alt="Someone emblem"
+                className="w-full h-full object-cover"
+                referrerPolicy="no-referrer"
+              />
+            </div>
+            <span>Someone</span>
           </button>
 
           {/* Minimalist Desktop Navigation */}
@@ -186,7 +197,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 {profileMenuOpen && (
                   <div
                     id="nav-profile-dropdown"
-                    className="absolute right-0 mt-2 w-60 bg-[#FAF8F5] rounded-2xl border border-[#E7E0D8] shadow-[0_12px_36px_-8px_rgba(45,39,35,0.12)] py-2 z-40 animate-in fade-in slide-in-from-top-1 duration-150"
+                    className="absolute right-0 mt-2 w-60 bg-[#FAF8F5] rounded-2xl border border-[#E7E0D8] shadow-[0_12px_36px_-8px_rgba(45,39,35,0.12)] py-2 z-40 spring-drawer-enter"
                   >
                     <div className="px-4 py-2.5 border-b border-[#E7E0D8]/60">
                       <p className="text-xs font-medium text-[#2D2723] truncate">{user.displayName}</p>
@@ -258,6 +269,17 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
           )}
 
+          {/* Mute/unmute audio alerts toggle */}
+          <button
+            id="nav-sound-toggle-btn"
+            onClick={toggleMute}
+            aria-label={isMuted ? 'Unmute audio alerts' : 'Mute audio alerts'}
+            className="p-1.5 sm:p-2 rounded-full text-[#8C827A] hover:text-[#2D2723] hover:bg-[#F2ECE4] transition-colors cursor-pointer"
+            title={isMuted ? 'Sound alerts muted (click to unmute)' : 'Sound alerts enabled (click to mute)'}
+          >
+            {isMuted ? <BellOff className="w-4 h-4 text-[#A84332]" /> : <Bell className="w-4 h-4 text-[#2F5938]" />}
+          </button>
+
           {/* Mobile hamburger menu toggle */}
           <button
             id="nav-mobile-menu-btn"
@@ -275,7 +297,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div
           ref={mobileMenuRef}
           id="nav-mobile-dropdown"
-          className="md:hidden border-t border-[#E7E0D8] bg-[#FAF8F5] px-4 py-4 space-y-2 shadow-xl animate-in slide-in-from-top-2 duration-150"
+          className="md:hidden border-t border-[#E7E0D8] bg-[#FAF8F5] px-4 py-4 space-y-2 shadow-xl spring-drawer-enter"
         >
           <div className="space-y-1 pb-2 border-b border-[#E7E0D8]">
             <button
@@ -342,6 +364,21 @@ export const Navbar: React.FC<NavbarProps> = ({
             >
               <AlertCircle className="w-4 h-4 text-[#8C827A]" />
               <span>Safety Notice</span>
+            </button>
+
+            {/* Sound Alerts Mute Toggle */}
+            <button
+              id="mobile-nav-sound-toggle"
+              onClick={toggleMute}
+              className="w-full text-left px-3 py-2 rounded-xl text-xs text-[#5C534D] hover:bg-[#F2ECE4] flex items-center justify-between transition-colors cursor-pointer"
+            >
+              <div className="flex items-center gap-2.5">
+                {isMuted ? <BellOff className="w-4 h-4 text-[#A84332]" /> : <Bell className="w-4 h-4 text-[#2F5938]" />}
+                <span>Sound Alerts</span>
+              </div>
+              <span className={`text-[11px] font-medium ${isMuted ? 'text-[#A84332]' : 'text-[#2F5938]'}`}>
+                {isMuted ? 'Muted' : 'Enabled'}
+              </span>
             </button>
           </div>
 

@@ -38,12 +38,12 @@ export const AboutPhilosophyModal: React.FC<AboutPhilosophyModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-labelledby="about-modal-title"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#2D2723]/60 backdrop-blur-sm animate-fade-in"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#2D2723]/60 backdrop-blur-sm spring-overlay-enter"
       onClick={onClose}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-2xl bg-[#FAF8F5] rounded-3xl border border-[#E7E0D8] shadow-2xl p-6 sm:p-8 flex flex-col max-h-[90vh] overflow-hidden"
+        className="w-full max-w-2xl bg-[#FAF8F5] rounded-3xl border border-[#E7E0D8] shadow-2xl p-6 sm:p-8 flex flex-col max-h-[90vh] overflow-hidden spring-modal-enter"
       >
         {/* Header */}
         <div className="flex items-center justify-between pb-4 border-b border-[#E7E0D8] shrink-0">

@@ -89,8 +89,14 @@ export const HomeView: React.FC<HomeViewProps> = ({
         transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
         className="space-y-7 w-full"
       >
-        {/* Welcoming unhurried microcopy badge */}
-        <div className="flex justify-center">
+        {/* Welcoming unhurried microcopy badge & Official Art Mark */}
+        <div className="flex flex-col items-center gap-4 justify-center">
+          <img
+            src="/icon-192.png"
+            alt="Someone"
+            className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-cover shadow-[0_8px_24px_rgba(45,39,35,0.08)] border border-[#E7E0D8]/90"
+            referrerPolicy="no-referrer"
+          />
           <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#F5F2EB] border border-[#E7E0D8] text-xs font-medium text-[#78716C] shadow-2xs">
             <span className="w-1.5 h-1.5 rounded-full bg-[#C86D51]"></span>
             <span>A quiet corner for genuine human conversation</span>

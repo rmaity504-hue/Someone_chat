@@ -1,8 +1,9 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { UserProfile, ChatMessage, Friendship, AdminStats } from '../types.js';
 import { getWebSocketUrl, socketService } from '../services/socket.js';
-import { playMatchChime, playMessageBlip } from '../utils/audioHaptics.js';
+import { playMatchChime, playMessageSound, playDisconnectSound } from '../utils/feedback.js';
 import { subscribeToPushNotifications } from '../utils/pushNotifications.js';
+import { filterChatMessage } from '../utils/privacyFilter.js';
 
 export interface VolunteerRequest {
   offerId: string;
@@ -49,6 +50,9 @@ interface AuthContextType {
   respondToVolunteer: (offerId: string, action: 'connect' | 'not_now') => void;
   sendMessage: (text: string) => void;
   disconnectChat: () => void;
+  quickEmergencyExit: () => void;
+  sessionClosureActive: boolean;
+  dismissSessionClosure: () => void;
   submitFriendshipChoice: (partnerId: string, choice: boolean, roomId?: string, sessionSignature?: string) => void;
   clearPostChat: () => void;
   reportUser: (reportedUserId: string, category: string, details: string, roomId?: string) => Promise<boolean>;
@@ -95,6 +99,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   } | null>(null);
   const [friendshipNotice, setFriendshipNotice] = useState<string | null>(null);
   const [systemNotification, setSystemNotification] = useState<string | null>(null);
+  const [sessionClosureActive, setSessionClosureActive] = useState<boolean>(false);
 
   const messagesRef = useRef<ChatMessage[]>([]);
   const userRef = useRef<UserProfile | null>(null);
@@ -208,13 +213,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setMatchingState(data);
     });
 
-    const unsubMatchFound = socketService.on('match:found', (data) => {
+    const onMatchFoundHandler = (data: any) => {
+      playMatchChime();
       setMatchingState({
         state: 'searching',
-        message: data.message || 'Someone is here.',
-        offerId: data.roomId,
+        message: data?.message || 'Someone is here.',
+        offerId: data?.roomId,
       });
-    });
+    };
+
+    const unsubMatchFound = socketService.on('match:found', onMatchFoundHandler);
+    const unsubMatchFoundUpper = socketService.on('MATCH_FOUND', onMatchFoundHandler);
+    const unsubMatched = socketService.on('matched', onMatchFoundHandler);
 
     const unsubWaitingPartner = socketService.on('match:waiting_partner', (data) => {
       setMatchingState((prev) => ({
@@ -250,13 +260,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setPendingVolunteerRequest(null);
     });
 
-    const unsubChatMessage = socketService.on('chat:message', (data) => {
+    const onIncomingMessage = (data: any) => {
       if (userRef.current && data.senderId !== userRef.current.id) {
-        playMessageBlip();
+        playMessageSound();
         setIsPartnerTyping(false);
       }
       setMessages((prev) => [...prev, data]);
-    });
+    };
+
+    const unsubChatMessage = socketService.on('chat:message', onIncomingMessage);
+    const unsubChatMessageUpper = socketService.on('MESSAGE_RECEIVED', onIncomingMessage);
 
     const unsubChatNotice = socketService.on('chat:notice', (data) => {
       if (data?.message) {
@@ -270,38 +283,59 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     });
 
-    const unsubTyping = socketService.on('user_typing', (data) => {
-      if (data?.isTyping) {
+    const handlePartnerTyping = (data: any) => {
+      const isTyping = data?.isTyping !== undefined ? Boolean(data.isTyping) : true;
+      if (isTyping) {
         setIsPartnerTyping(true);
         if (partnerTypingTimerRef.current) clearTimeout(partnerTypingTimerRef.current);
+        // Automatically decay typing indicator after 2.5 seconds of inactivity
         partnerTypingTimerRef.current = setTimeout(() => {
           setIsPartnerTyping(false);
-        }, 3000);
+        }, 2500);
       } else {
         setIsPartnerTyping(false);
         if (partnerTypingTimerRef.current) clearTimeout(partnerTypingTimerRef.current);
       }
-    });
+    };
 
-    const unsubPartnerDisconnected = socketService.on('partner_disconnected', (data) => {
+    const handlePartnerTypingStop = () => {
+      setIsPartnerTyping(false);
+      if (partnerTypingTimerRef.current) clearTimeout(partnerTypingTimerRef.current);
+    };
+
+    const unsubTyping = socketService.on('user_typing', handlePartnerTyping);
+    const unsubChatTyping = socketService.on('chat:typing', handlePartnerTyping);
+    const unsubTypingStart = socketService.on('TYPING_START', handlePartnerTyping);
+    const unsubTypingStop = socketService.on('TYPING_STOP', handlePartnerTypingStop);
+
+    const onPartnerDisconnectedHandler = (data: any) => {
+      playDisconnectSound();
       setActiveSession(null);
       setMessages([]);
+      messagesRef.current = [];
       setIsPartnerTyping(false);
       setMatchingState({ state: 'idle' });
+      setSessionClosureActive(true);
       if (data?.reason) {
         setSystemNotification(data.reason);
       }
-    });
+    };
+
+    const unsubPartnerDisconnected = socketService.on('partner_disconnected', onPartnerDisconnectedHandler);
+    const unsubPartnerDisconnectedUpper = socketService.on('PARTNER_DISCONNECTED', onPartnerDisconnectedHandler);
 
     const unsubChatBlocked = socketService.on('chat:blocked', (data) => {
       setSystemNotification(data.message);
     });
 
     const unsubSessionEnded = socketService.on('session:ended', (data) => {
+      playDisconnectSound();
+      const hadMessages = messagesRef.current.length > 0 || (data.messageCount && data.messageCount > 0);
       setActiveSession(null);
+      setMessages([]);
+      messagesRef.current = [];
       setIsPartnerTyping(false);
       setMatchingState({ state: 'idle' });
-      const hadMessages = messagesRef.current.length > 0 || (data.messageCount && data.messageCount > 0);
       if (data.safetyIntervention) {
         setSystemNotification(data.reason || 'The conversation was ended due to a community safety guideline violation.');
       } else if (data.promptFriendship && data.partnerId && hadMessages) {
@@ -312,7 +346,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           sessionSignature: data.sessionSignature,
         });
       } else {
-        // Chat was aborted before entering room, timed out, or had 0 messages sent -> No PostChatModal!
+        setSessionClosureActive(true);
         if (data.reason && data.reason !== 'Conversation ended' && data.reason !== 'Connection timed out.') {
           setSystemNotification(data.reason);
         }
@@ -345,15 +379,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       unsubAccountRestricted();
       unsubMatchingState();
       unsubMatchFound();
+      unsubMatchFoundUpper();
+      unsubMatched();
       unsubWaitingPartner();
       unsubMatchFailed();
       unsubVolunteerRequest();
       unsubSessionStart();
       unsubChatMessage();
+      unsubChatMessageUpper();
       unsubChatNotice();
       unsubChatWarning();
       unsubTyping();
+      unsubChatTyping();
+      unsubTypingStart();
+      unsubTypingStop();
       unsubPartnerDisconnected();
+      unsubPartnerDisconnectedUpper();
       unsubChatBlocked();
       unsubSessionEnded();
       unsubSessionEnforcement();
@@ -403,6 +444,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const sendTyping = (isTyping: boolean) => {
     if (!activeSession) return;
+    socketService.send(isTyping ? 'TYPING_START' : 'TYPING_STOP', { roomId: activeSession.roomId, isTyping });
     socketService.send('user_typing', { roomId: activeSession.roomId, isTyping });
   };
 
@@ -422,9 +464,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const sendMessage = (text: string) => {
     if (!activeSession || !text.trim()) return;
+    const filterResult = filterChatMessage(text);
+    if (!filterResult.allowed) {
+      setSystemNotification(filterResult.reason || 'Links are kept out to maintain a quiet sanctuary.');
+      return;
+    }
+    // Clear typing indicator immediately upon sending a message
+    sendTyping(false);
     socketService.send('chat:send', {
       roomId: activeSession.roomId,
-      text: text.trim(),
+      text: filterResult.sanitizedText,
     });
   };
 
@@ -434,8 +483,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     setActiveSession(null);
     setMessages([]);
+    messagesRef.current = [];
     setIsPartnerTyping(false);
     setMatchingState({ state: 'idle' });
+    setSessionClosureActive(true);
+  };
+
+  const quickEmergencyExit = () => {
+    if (activeSession) {
+      socketService.send('chat:disconnect', { roomId: activeSession.roomId });
+    }
+    setActiveSession(null);
+    setMessages([]);
+    messagesRef.current = [];
+    setIsPartnerTyping(false);
+    setPostChatPartner(null);
+    setSessionClosureActive(false);
+    setMatchingState({ state: 'idle' });
+    setSystemNotification(null);
+  };
+
+  const dismissSessionClosure = () => {
+    setSessionClosureActive(false);
   };
 
   const submitFriendshipChoice = (
@@ -711,6 +780,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         respondToVolunteer,
         sendMessage,
         disconnectChat,
+        quickEmergencyExit,
+        sessionClosureActive,
+        dismissSessionClosure,
         submitFriendshipChoice,
         clearPostChat,
         reportUser,

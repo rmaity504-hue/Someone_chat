@@ -17,6 +17,7 @@ import { AccountSecurityModal } from './components/AccountSecurityModal.js';
 import { AboutPhilosophyModal } from './components/AboutPhilosophyModal.js';
 import { ContactAdminModal } from './components/ContactAdminModal.js';
 import { InstallGuideModal } from './components/InstallGuideModal.js';
+import { SessionClosureCard } from './components/SessionClosureCard.js';
 import { InstallProvider, useInstall } from './context/InstallContext.js';
 import { AlertOctagon, AlertCircle, X, MessageSquare, Info } from 'lucide-react';
 
@@ -28,6 +29,8 @@ function MainApp() {
     enterMatching,
     systemNotification,
     clearNotification,
+    sessionClosureActive,
+    dismissSessionClosure,
   } = useAuth();
   const { isInstallModalOpen, setIsInstallModalOpen, toastMessage } = useInstall();
 
@@ -61,7 +64,7 @@ function MainApp() {
     user && (user.status === 'restricted' || user.status === 'suspended' || user.status === 'banned');
 
   return (
-    <div className="min-h-screen bg-[#FAF8F5] text-[#2D2723] flex flex-col font-sans selection:bg-[#C86D51]/20 selection:text-[#2D2723]">
+    <div className="min-h-screen text-[#2D2723] flex flex-col font-sans selection:bg-[#C86D51]/20 selection:text-[#2D2723]">
       {/* Navigation */}
       <Navbar
         onOpenAuth={() => setAuthModalOpen(true)}
@@ -100,7 +103,7 @@ function MainApp() {
       )}
 
       {/* Primary Content View */}
-      <main className="flex-1 flex flex-col items-center justify-center p-4">
+      <main className={`flex-1 flex flex-col items-center justify-center ${activeSession ? 'p-0 sm:p-4 w-full' : 'p-4'}`}>
         {activeSession ? (
           <ChatView />
         ) : matchingState.state !== 'idle' ? (
@@ -114,42 +117,44 @@ function MainApp() {
         )}
       </main>
 
-      {/* Footer minimal philosophy reassurance & links */}
-      <footer className="w-full py-6 px-4 text-center text-xs text-[#8C827A] border-t border-[#E7E0D8]/60 bg-[#FAF8F5]">
-        <div className="max-w-4xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
-          <p>Someone • A quiet corner for genuine human conversation.</p>
-          <div className="flex flex-wrap items-center justify-center gap-4 text-xs">
-            <button
-              id="footer-philosophy-btn"
-              onClick={() => {
-                setAboutInitialTab('philosophy');
-                setAboutModalOpen(true);
-              }}
-              className="hover:text-[#2D2723] underline underline-offset-4 decoration-[#E7E0D8] transition-colors cursor-pointer"
-            >
-              Our Philosophy & Architecture
-            </button>
-            <button
-              id="footer-retention-btn"
-              onClick={() => {
-                setAboutInitialTab('retention');
-                setAboutModalOpen(true);
-              }}
-              className="hover:text-[#2D2723] underline underline-offset-4 decoration-[#E7E0D8] transition-colors cursor-pointer"
-            >
-              Zero-Retention Policy
-            </button>
-            <button
-              id="footer-contact-admin-btn"
-              onClick={() => setContactAdminOpen(true)}
-              className="hover:text-[#2D2723] underline underline-offset-4 decoration-[#E7E0D8] transition-colors cursor-pointer flex items-center gap-1"
-            >
-              <MessageSquare className="w-3.5 h-3.5 text-[#8C827A]" />
-              <span>Contact Admin</span>
-            </button>
+      {/* Footer minimal philosophy reassurance & links (hidden during active chat for clean mobile viewport) */}
+      {!activeSession && (
+        <footer className="w-full py-6 px-4 text-center text-xs text-[#8C827A] border-t border-[#E7E0D8]/60 bg-[#F6F3EE]/75 backdrop-blur-xs">
+          <div className="max-w-4xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
+            <p>Someone • A quiet corner for genuine human conversation.</p>
+            <div className="flex flex-wrap items-center justify-center gap-4 text-xs">
+              <button
+                id="footer-philosophy-btn"
+                onClick={() => {
+                  setAboutInitialTab('philosophy');
+                  setAboutModalOpen(true);
+                }}
+                className="hover:text-[#2D2723] underline underline-offset-4 decoration-[#E7E0D8] transition-colors cursor-pointer"
+              >
+                Our Philosophy & Architecture
+              </button>
+              <button
+                id="footer-retention-btn"
+                onClick={() => {
+                  setAboutInitialTab('retention');
+                  setAboutModalOpen(true);
+                }}
+                className="hover:text-[#2D2723] underline underline-offset-4 decoration-[#E7E0D8] transition-colors cursor-pointer"
+              >
+                Zero-Retention Policy
+              </button>
+              <button
+                id="footer-contact-admin-btn"
+                onClick={() => setContactAdminOpen(true)}
+                className="hover:text-[#2D2723] underline underline-offset-4 decoration-[#E7E0D8] transition-colors cursor-pointer flex items-center gap-1"
+              >
+                <MessageSquare className="w-3.5 h-3.5 text-[#8C827A]" />
+                <span>Contact Admin</span>
+              </button>
+            </div>
           </div>
-        </div>
-      </footer>
+        </footer>
+      )}
 
       {/* Persistent & Interactive Overlays */}
       <VolunteerPromptBanner />
@@ -205,6 +210,16 @@ function MainApp() {
       <InstallGuideModal
         isOpen={isInstallModalOpen}
         onClose={() => setIsInstallModalOpen(false)}
+      />
+
+      {/* Ephemeral Session Closure Ritual Modal */}
+      <SessionClosureCard
+        isOpen={sessionClosureActive}
+        onFindAnother={() => {
+          dismissSessionClosure();
+          handleFindSomeone(pendingTopics);
+        }}
+        onReturnHome={() => dismissSessionClosure()}
       />
 
       {/* PWA / Standalone Toast Notification */}

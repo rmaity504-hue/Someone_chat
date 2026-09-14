@@ -34,10 +34,13 @@ export const InstallGuideModal: React.FC<InstallGuideModalProps> = ({
       >
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-[#E7E0D8]">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-full bg-[#FAF0EB] text-[#C86D51] flex items-center justify-center border border-[#E8C7BC] shrink-0">
-              <Smartphone className="w-4 h-4" />
-            </div>
+          <div className="flex items-center gap-3">
+            <img
+              src="/icon-192.png"
+              alt="Someone app icon"
+              className="w-10 h-10 rounded-xl object-cover shadow-xs border border-[#E7E0D8] shrink-0"
+              referrerPolicy="no-referrer"
+            />
             <div>
               <h3
                 id="install-guide-title"

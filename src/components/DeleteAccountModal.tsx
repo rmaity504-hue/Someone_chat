@@ -57,11 +57,11 @@ export const DeleteAccountModal: React.FC<DeleteAccountModalProps> = ({ isOpen, 
   return (
     <div
       id="delete-account-modal-overlay"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#2D2723]/40 backdrop-blur-xs animate-in fade-in duration-200"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#2D2723]/40 backdrop-blur-xs spring-overlay-enter"
     >
       <div
         id="delete-account-modal-card"
-        className="bg-[#FAF8F5] w-full max-w-md rounded-3xl border border-[#E7E0D8] shadow-[0_12px_40px_rgba(45,39,35,0.15)] overflow-hidden"
+        className="bg-[#FAF8F5] w-full max-w-md rounded-3xl border border-[#E7E0D8] shadow-[0_12px_40px_rgba(45,39,35,0.15)] overflow-hidden spring-modal-enter"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b border-[#E7E0D8]">

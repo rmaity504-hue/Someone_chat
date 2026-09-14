@@ -12,11 +12,22 @@ import {
   Loader2,
   Volume2,
   VolumeX,
+  Bell,
+  BellOff,
   SkipForward,
+  Wind,
 } from 'lucide-react';
 import { ReportModal } from './ReportModal.js';
 import { IcebreakerModal } from './IcebreakerModal.js';
-import { useSoundMute } from '../utils/audioHaptics.js';
+import { useSoundMute } from '../utils/feedback.js';
+import { filterChatMessage } from '../utils/privacyFilter.js';
+
+const GENTLE_PUSH_PROMPTS = [
+  "What's a thought you haven't said out loud today?",
+  "What kept you awake tonight?",
+  "If tonight had a soundtrack, what would it be?",
+  "What is something small that made you smile recently?",
+];
 
 export const ChatView: React.FC = () => {
   const {
@@ -26,6 +37,7 @@ export const ChatView: React.FC = () => {
     isPartnerTyping,
     sendMessage,
     disconnectChat,
+    quickEmergencyExit,
     skipToNext,
     sendTyping,
     blockUser,
@@ -42,12 +54,19 @@ export const ChatView: React.FC = () => {
   const [confirmBlock, setConfirmBlock] = useState(false);
   const [reminderDismissed, setReminderDismissed] = useState(false);
   const [simulatingAction, setSimulatingAction] = useState<string | null>(null);
-  const [containerHeight, setContainerHeight] = useState<string>('calc(100dvh - 4.25rem)');
+
+  // Gentle Pushes & Privacy Shield states
+  const [gentlePushIndex, setGentlePushIndex] = useState<number>(0);
+  const [showGentlePush, setShowGentlePush] = useState<boolean>(false);
+  const [privacyToast, setPrivacyToast] = useState<string | null>(null);
+  const privacyToastTimerRef = useRef<any>(null);
+  const lastMessageTimestampRef = useRef<number>(Date.now());
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
-  const lastTypingSentRef = useRef<number>(0);
-  const typingTimeoutRef = useRef<any>(null);
+  const isLocalTypingRef = useRef<boolean>(false);
+  const typingDebounceTimerRef = useRef<any>(null);
+  const typingInactivityTimerRef = useRef<any>(null);
 
   const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
     messagesEndRef.current?.scrollIntoView({ behavior });
@@ -57,42 +76,86 @@ export const ChatView: React.FC = () => {
     scrollToBottom('smooth');
   }, [messages, isPartnerTyping]);
 
-  // Mobile visualViewport layout handling: dynamically adjust container height so input remains pinned above the keyboard
+  // Track conversation flow: update timestamp on messages and advance prompts
   useEffect(() => {
-    const handleViewportResize = () => {
-      if (window.visualViewport) {
-        const vv = window.visualViewport;
-        if (window.innerWidth < 640) {
-          // On mobile screens, bind container height to visualViewport.height minus header navigation
-          const navOffset = 56; // approximate mobile navbar height
-          setContainerHeight(`${Math.max(200, vv.height - navOffset)}px`);
-        } else {
-          setContainerHeight('84vh');
+    if (messages.length > 0) {
+      lastMessageTimestampRef.current = Date.now();
+      setShowGentlePush(false);
+      setGentlePushIndex((prev) => (prev + 1) % GENTLE_PUSH_PROMPTS.length);
+    }
+  }, [messages.length]);
+
+  // Gentle Pushes timer: 45 seconds of mutual silence after at least 1 message
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (messages.length > 0) {
+        const elapsed = Date.now() - lastMessageTimestampRef.current;
+        if (elapsed >= 45000 && !input.trim() && !isPartnerTyping) {
+          setShowGentlePush(true);
         }
-        scrollToBottom('auto');
       }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [messages.length, input, isPartnerTyping]);
+
+  // Quietly fade out suggestion pill as soon as either person starts typing
+  useEffect(() => {
+    if (input.trim() || isPartnerTyping) {
+      setShowGentlePush(false);
+    }
+  }, [input, isPartnerTyping]);
+
+  // Mobile Visual Viewport API: lock viewport height and securely dock input bar
+  useEffect(() => {
+    const updateViewport = () => {
+      if (window.visualViewport) {
+        const vh = window.visualViewport.height;
+        document.documentElement.style.setProperty('--viewport-height', `${vh}px`);
+      } else {
+        document.documentElement.style.setProperty('--viewport-height', `${window.innerHeight}px`);
+      }
+      // Scroll to latest message whenever keyboard opens or viewport shifts
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
     };
 
-    handleViewportResize();
-    const vv = window.visualViewport;
-    if (vv) {
-      vv.addEventListener('resize', handleViewportResize);
-      vv.addEventListener('scroll', handleViewportResize);
-      window.addEventListener('resize', handleViewportResize);
+    updateViewport();
+
+    if (window.visualViewport) {
+      const vv = window.visualViewport;
+      vv.addEventListener('resize', updateViewport);
+      vv.addEventListener('scroll', updateViewport);
+      window.addEventListener('resize', updateViewport);
       return () => {
-        vv.removeEventListener('resize', handleViewportResize);
-        vv.removeEventListener('scroll', handleViewportResize);
-        window.removeEventListener('resize', handleViewportResize);
+        vv.removeEventListener('resize', updateViewport);
+        vv.removeEventListener('scroll', updateViewport);
+        window.removeEventListener('resize', updateViewport);
       };
+    } else {
+      window.addEventListener('resize', updateViewport);
+      return () => window.removeEventListener('resize', updateViewport);
     }
   }, []);
 
-  // Cleanup typing timeout on unmount
+  const stopTyping = () => {
+    if (typingDebounceTimerRef.current) {
+      clearTimeout(typingDebounceTimerRef.current);
+      typingDebounceTimerRef.current = null;
+    }
+    if (typingInactivityTimerRef.current) {
+      clearTimeout(typingInactivityTimerRef.current);
+      typingInactivityTimerRef.current = null;
+    }
+    if (isLocalTypingRef.current) {
+      isLocalTypingRef.current = false;
+      sendTyping(false);
+    }
+  };
+
+  // Cleanup typing timers on unmount
   useEffect(() => {
     return () => {
-      if (typingTimeoutRef.current) {
-        clearTimeout(typingTimeoutRef.current);
-      }
+      stopTyping();
     };
   }, []);
 
@@ -109,32 +172,59 @@ export const ChatView: React.FC = () => {
     const val = e.target.value;
     setInput(val);
 
-    // Debounced typing indicator: emit user_typing (max once every 2s)
-    const now = Date.now();
     if (val.trim()) {
-      if (now - lastTypingSentRef.current > 2000) {
-        sendTyping(true);
-        lastTypingSentRef.current = now;
+      // Clear pending inactivity timer while actively typing
+      if (typingInactivityTimerRef.current) {
+        clearTimeout(typingInactivityTimerRef.current);
       }
-      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-      // Stop typing indicator after 3 seconds of inactivity
-      typingTimeoutRef.current = setTimeout(() => {
-        sendTyping(false);
-      }, 3000);
+
+      // Debounce TYPING_START by 300ms if not already broadcasting
+      if (!isLocalTypingRef.current) {
+        if (typingDebounceTimerRef.current) clearTimeout(typingDebounceTimerRef.current);
+        typingDebounceTimerRef.current = setTimeout(() => {
+          isLocalTypingRef.current = true;
+          sendTyping(true);
+        }, 300);
+      }
+
+      // Automatically emit TYPING_STOP after 2.5 seconds of inactivity
+      typingInactivityTimerRef.current = setTimeout(() => {
+        stopTyping();
+      }, 2500);
     } else {
-      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-      sendTyping(false);
+      stopTyping();
     }
+  };
+
+  const handleUseGentlePrompt = (promptText: string) => {
+    setInput(promptText);
+    setShowGentlePush(false);
+    const inputEl = document.getElementById('chat-input') as HTMLInputElement | null;
+    inputEl?.focus();
   };
 
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim()) return;
 
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    sendTyping(false);
+    // Automatic Client-side Privacy & Data Filter
+    const filterResult = filterChatMessage(input);
+    if (!filterResult.allowed) {
+      setPrivacyToast(filterResult.reason || 'Links are kept out to maintain a quiet sanctuary.');
+      if (privacyToastTimerRef.current) clearTimeout(privacyToastTimerRef.current);
+      privacyToastTimerRef.current = setTimeout(() => {
+        setPrivacyToast(null);
+      }, 4500);
+      return; // Prevent transmission until link is removed
+    }
 
-    sendMessage(input.trim());
+    setPrivacyToast(null);
+
+    // Immediately stop emitting typing upon sending a message
+    stopTyping();
+
+    // Send the sanitized message (phone numbers masked)
+    sendMessage(filterResult.sanitizedText);
     setInput('');
   };
 
@@ -155,12 +245,12 @@ export const ChatView: React.FC = () => {
   return (
     <div
       ref={chatContainerRef}
-      style={{ height: containerHeight }}
-      className="flex-1 flex flex-col w-full max-w-2xl mx-auto min-h-0 bg-[#FAF8F5] sm:border sm:border-[#E7E0D8] sm:rounded-3xl shadow-[0_10px_35px_-4px_rgba(45,39,35,0.06)] overflow-hidden transition-[height] duration-75 ease-out"
+      style={{ height: 'var(--viewport-height, 100dvh)' }}
+      className="flex flex-col w-full max-w-2xl mx-auto h-[var(--viewport-height,100dvh)] max-h-[var(--viewport-height,100dvh)] sm:h-[84vh] sm:max-h-[850px] bg-[#F6F3EE]/95 sm:backdrop-blur-sm sm:border sm:border-[#E7E0D8] sm:rounded-3xl shadow-[0_10px_35px_-4px_rgba(45,39,35,0.06)] overflow-hidden transition-[height] duration-75 ease-out"
       id="chat-view"
     >
       {/* Top Header */}
-      <div className="px-4 py-3 border-b border-[#E7E0D8] bg-[#FAF8F5]/90 backdrop-blur-md flex items-center justify-between gap-2">
+      <div className="px-4 py-3 border-b border-[#E7E0D8] bg-[#F6F3EE]/90 backdrop-blur-md flex items-center justify-between gap-2">
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
           <div className="min-w-0">
@@ -192,10 +282,11 @@ export const ChatView: React.FC = () => {
           <button
             id="chat-sound-toggle-btn"
             onClick={toggleMute}
+            aria-label={isMuted ? 'Unmute sounds' : 'Mute sounds'}
             className="p-2 text-[#8C827A] hover:text-[#2D2723] hover:bg-[#F2ECE4] rounded-full transition-colors cursor-pointer"
-            title={isMuted ? 'Sound muted (click to unmute)' : 'Sound enabled (click to mute)'}
+            title={isMuted ? 'Sound alerts muted (click to unmute)' : 'Sound alerts enabled (click to mute)'}
           >
-            {isMuted ? <VolumeX className="w-4 h-4 text-[#A84332]" /> : <Volume2 className="w-4 h-4 text-[#2F5938]" />}
+            {isMuted ? <BellOff className="w-4 h-4 text-[#A84332]" /> : <Bell className="w-4 h-4 text-[#2F5938]" />}
           </button>
 
           {/* Report Button */}
@@ -216,6 +307,17 @@ export const ChatView: React.FC = () => {
             title="Block this person"
           >
             <Ban className="w-4 h-4" />
+          </button>
+
+          {/* Quick Exit Button (Feather-light Instant Departure) */}
+          <button
+            id="chat-quick-exit-btn"
+            onClick={quickEmergencyExit}
+            className="p-2 text-[#8C827A] hover:text-[#C86D51] hover:bg-[#FAF0EE] rounded-full transition-colors cursor-pointer"
+            title="Quick Exit — instant departure, no logs"
+            aria-label="Quick Exit"
+          >
+            <Wind className="w-4 h-4" />
           </button>
 
           {/* Quick Next Match Button */}
@@ -341,7 +443,7 @@ export const ChatView: React.FC = () => {
             return (
               <div
                 key={msg.id}
-                className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
+                className={`flex flex-col chat-bubble-enter ${isMe ? 'items-end' : 'items-start'}`}
               >
                 <div
                   className={`max-w-[85%] sm:max-w-[75%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-2xs ${
@@ -360,29 +462,72 @@ export const ChatView: React.FC = () => {
           })
         )}
 
-        {/* Partner Typing Indicator */}
+        {/* Floating Organic Partner Typing Bubble */}
         {isPartnerTyping && (
-          <div className="flex items-center gap-2 text-xs text-[#8C827A] px-1 py-1">
-            <div className="flex items-center gap-1.5 bg-[#F0EBE1] px-3 py-1.5 rounded-full border border-[#E7E0D8]/60 shadow-2xs">
-              <span className="text-[11px] text-[#5C534D] font-medium">
+          <div className="flex items-center gap-2 text-xs text-[#8C827A] px-1 py-1 chat-bubble-enter">
+            <div className="flex items-center gap-2 bg-[#F0EBE1] text-[#78716C] px-3.5 py-2 rounded-2xl rounded-bl-xs border border-[#E7E0D8]/90 shadow-2xs">
+              <span className="text-[11px] text-[#5C534D] font-medium tracking-tight">
                 {activeSession.partnerDisplayName} is typing
               </span>
-              <span className="flex gap-1 ml-0.5">
-                <span className="w-1.5 h-1.5 bg-[#8C827A] rounded-full animate-bounce [animation-delay:-0.3s]" />
-                <span className="w-1.5 h-1.5 bg-[#8C827A] rounded-full animate-bounce [animation-delay:-0.15s]" />
-                <span className="w-1.5 h-1.5 bg-[#8C827A] rounded-full animate-bounce" />
-              </span>
+              <div className="flex items-center gap-1.5 ml-0.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#C86D51] typing-dot-1 inline-block" />
+                <span className="w-1.5 h-1.5 rounded-full bg-[#C86D51] typing-dot-2 inline-block" />
+                <span className="w-1.5 h-1.5 rounded-full bg-[#C86D51] typing-dot-3 inline-block" />
+              </div>
             </div>
+          </div>
+        )}
+
+        {/* Subtle Centered Gentle Push Suggestion Pill (Conversation Flow Aid) */}
+        {showGentlePush && !isPartnerTyping && !input.trim() && (
+          <div className="flex justify-center my-3 px-2 chat-bubble-enter">
+            <button
+              type="button"
+              id="gentle-push-prompt-btn"
+              onClick={() => handleUseGentlePrompt(GENTLE_PUSH_PROMPTS[gentlePushIndex])}
+              className="group flex items-center gap-2.5 px-4 py-2 bg-[#FAF8F5]/95 hover:bg-[#F2ECE4] border border-[#E7E0D8] hover:border-[#C86D51]/50 rounded-full text-xs text-[#5C534D] hover:text-[#2D2723] shadow-xs hover:shadow transition-all duration-300 cursor-pointer max-w-[95%] sm:max-w-md text-left"
+              title="Tap to place this in your message"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-[#C86D51] shrink-0 group-hover:rotate-12 transition-transform" />
+              <span className="font-serif italic text-xs leading-relaxed truncate">
+                "{GENTLE_PUSH_PROMPTS[gentlePushIndex]}"
+              </span>
+              <span className="text-[10px] text-[#8C827A] font-sans ml-auto shrink-0 bg-[#EFE9DF] group-hover:bg-[#E7DFD3] text-[#5C534D] px-2 py-0.5 rounded-full font-medium transition-colors">
+                tap to ask
+              </span>
+            </button>
           </div>
         )}
 
         <div ref={messagesEndRef} />
       </div>
 
+      {/* Automatic Data Filter Toast (Privacy Shield) */}
+      {privacyToast && (
+        <div
+          id="privacy-shield-toast"
+          role="alert"
+          className="px-4 py-2 bg-[#FAF0EB] border-t border-[#E8C7BC] flex items-center justify-between gap-3 text-xs text-[#A84332] animate-in fade-in slide-in-from-bottom-1 duration-200"
+        >
+          <div className="flex items-center gap-2">
+            <ShieldAlert className="w-4 h-4 text-[#C86D51] shrink-0" />
+            <span className="font-medium">{privacyToast}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setPrivacyToast(null)}
+            className="text-[#8C827A] hover:text-[#2D2723] text-xs px-1 cursor-pointer font-medium"
+            aria-label="Dismiss privacy warning"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Input Form */}
       <form
         onSubmit={handleSend}
-        className="p-3 sm:p-3.5 border-t border-[#E7E0D8] bg-[#FAF8F5]/95 backdrop-blur-xs flex items-center gap-2 relative"
+        className="p-3 sm:p-3.5 border-t border-[#E7E0D8] bg-[#F6F3EE]/95 backdrop-blur-xs flex items-center gap-2 relative shrink-0"
         id="chat-input-form"
       >
         <button

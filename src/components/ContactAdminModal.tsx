@@ -94,12 +94,12 @@ export const ContactAdminModal: React.FC<ContactAdminModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-labelledby="contact-admin-title"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#2D2723]/60 backdrop-blur-sm animate-fade-in"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#2D2723]/60 backdrop-blur-sm spring-overlay-enter"
       onClick={handleResetAndClose}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-lg bg-[#FAF8F5] rounded-3xl border border-[#E7E0D8] shadow-2xl p-6 sm:p-8 flex flex-col max-h-[90vh] overflow-y-auto"
+        className="w-full max-w-lg bg-[#FAF8F5] rounded-3xl border border-[#E7E0D8] shadow-2xl p-6 sm:p-8 flex flex-col max-h-[90vh] overflow-y-auto spring-modal-enter"
       >
         <div className="flex items-center justify-between pb-4 border-b border-[#E7E0D8]">
           <div className="flex items-center gap-2.5">

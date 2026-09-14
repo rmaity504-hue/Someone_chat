@@ -1,4 +1,18 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+const fs = require('fs');
+const path = require('path');
+const sharp = require('sharp');
+
+// Generate the SVG markup for Someone app icon
+// Incorporating the user's sumi-e ink-wash silhouette, energetic splatter burst,
+// cinnabar crimson calligraphy brushstroke, and warm ochre watercolor underwash.
+function getIconSvg(isMaskable = false, isBrandArtwork = false) {
+  const size = 512;
+  const transform = isMaskable ? 'transform="scale(0.82) translate(56, 56)"' : '';
+  const background = isMaskable || isBrandArtwork
+    ? `<rect width="512" height="512" fill="#F6F3EE"/>`
+    : `<rect width="512" height="512" rx="104" fill="#F6F3EE"/>`;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
     <!-- Paper texture filter -->
     <filter id="ink-bleed" x="-10%" y="-10%" width="120%" height="120%">
@@ -32,10 +46,10 @@
   </defs>
 
   <!-- Canvas Background -->
-  <rect width="512" height="512" rx="104" fill="#F6F3EE"/>
+  ${background}
 
   <!-- Artwork Container with optional safe-padding for maskable -->
-  <g >
+  <g ${transform}>
     <!-- Subtle watercolor paper grain / undertone wash -->
     <path d="M 180 180 Q 240 140 330 150 Q 400 180 390 280 Q 360 360 260 390 Q 180 370 170 300 Z" fill="#F0ECE0" opacity="0.4" filter="url(#soft-glow)"/>
 
@@ -157,4 +171,78 @@
     <circle cx="470" cy="258" r="1.4" fill="#D64230" opacity="0.75"/>
     <circle cx="118" cy="432" r="2.2" fill="#A8281C" opacity="0.8"/>
   </g>
-</svg>
+</svg>`;
+}
+
+async function run() {
+  console.log('Generating official Someone app icons...');
+
+  const publicDir = path.join(process.cwd(), 'public');
+  const distDir = path.join(process.cwd(), 'dist');
+
+  const standardSvg = getIconSvg(false);
+  const maskableSvg = getIconSvg(true);
+
+  // 1. Save public/icon.svg
+  fs.writeFileSync(path.join(publicDir, 'icon.svg'), standardSvg, 'utf8');
+  console.log('Created public/icon.svg');
+
+  // 2. Render public/icon-512.png (512x512)
+  const buf512 = await sharp(Buffer.from(standardSvg))
+    .resize(512, 512)
+    .png({ compressionLevel: 9 })
+    .toBuffer();
+  fs.writeFileSync(path.join(publicDir, 'icon-512.png'), buf512);
+  console.log('Created public/icon-512.png (512x512)');
+
+  // 3. Render public/icon-192.png (192x192)
+  const buf192 = await sharp(Buffer.from(standardSvg))
+    .resize(192, 192)
+    .png({ compressionLevel: 9 })
+    .toBuffer();
+  fs.writeFileSync(path.join(publicDir, 'icon-192.png'), buf192);
+  console.log('Created public/icon-192.png (192x192)');
+
+  // 4. Render public/icon-maskable.png (512x512 with safe-zone margin)
+  const bufMaskable = await sharp(Buffer.from(maskableSvg))
+    .resize(512, 512)
+    .png({ compressionLevel: 9 })
+    .toBuffer();
+  fs.writeFileSync(path.join(publicDir, 'icon-maskable.png'), bufMaskable);
+  console.log('Created public/icon-maskable.png (512x512 maskable)');
+
+  // 5. Render public/apple-touch-icon.png (180x180)
+  const bufApple = await sharp(Buffer.from(standardSvg))
+    .resize(180, 180)
+    .png({ compressionLevel: 9 })
+    .toBuffer();
+  fs.writeFileSync(path.join(publicDir, 'apple-touch-icon.png'), bufApple);
+  console.log('Created public/apple-touch-icon.png (180x180)');
+
+  // 6. Render public/brand-artwork.png (1024x1024 high resolution square artwork)
+  const brandArtworkSvg = getIconSvg(false, true);
+  const bufBrandArtwork = await sharp(Buffer.from(brandArtworkSvg))
+    .resize(1024, 1024)
+    .png({ compressionLevel: 9 })
+    .toBuffer();
+  fs.writeFileSync(path.join(publicDir, 'brand-artwork.png'), bufBrandArtwork);
+  console.log('Created public/brand-artwork.png (1024x1024)');
+
+  // Also sync to dist/ if dist exists
+  if (fs.existsSync(distDir)) {
+    fs.copyFileSync(path.join(publicDir, 'icon.svg'), path.join(distDir, 'icon.svg'));
+    fs.copyFileSync(path.join(publicDir, 'icon-512.png'), path.join(distDir, 'icon-512.png'));
+    fs.copyFileSync(path.join(publicDir, 'icon-192.png'), path.join(distDir, 'icon-192.png'));
+    fs.copyFileSync(path.join(publicDir, 'icon-maskable.png'), path.join(distDir, 'icon-maskable.png'));
+    fs.copyFileSync(path.join(publicDir, 'apple-touch-icon.png'), path.join(distDir, 'apple-touch-icon.png'));
+    fs.copyFileSync(path.join(publicDir, 'brand-artwork.png'), path.join(distDir, 'brand-artwork.png'));
+    console.log('Synced icon assets to dist/');
+  }
+
+  console.log('All icons generated successfully.');
+}
+
+run().catch((err) => {
+  console.error('Error generating icons:', err);
+  process.exit(1);
+});

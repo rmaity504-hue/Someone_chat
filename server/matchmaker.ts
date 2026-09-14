@@ -755,6 +755,7 @@ export class Matchmaker {
     const recipientId = session.user1Id === userId ? session.user2Id : session.user1Id;
     this.sendToUser(recipientId, 'user_typing', { isTyping, senderId: userId, roomId });
     this.sendToUser(recipientId, 'chat:typing', { isTyping, senderId: userId, roomId });
+    this.sendToUser(recipientId, isTyping ? 'TYPING_START' : 'TYPING_STOP', { isTyping, senderId: userId, roomId });
   }
 
   // Teardown current conversation and immediately enter matching for the next partner
