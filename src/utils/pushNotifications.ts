@@ -1,50 +1,35 @@
 // Client-side Web Push Notification Manager
 
+export const VAPID_PUBLIC_KEY = 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuNkr3qBUYhHBQFLXYp5Nksh8U';
+
 export function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  // Strip all whitespaces, newlines, carriage returns
-  const cleanKey = base64String.replace(/\s+/g, '');
-  const padding = '='.repeat((4 - (cleanKey.length % 4)) % 4);
-  const base64 = (cleanKey + padding)
-    .replace(/-/g, '+')
-    .replace(/_/g, '/');
-
+  const clean = base64String.replace(/\s+/g, '');
+  const padding = '='.repeat((4 - (clean.length % 4)) % 4);
+  const base64 = (clean + padding).replace(/-/g, '+').replace(/_/g, '/');
   const rawData = window.atob(base64);
-  const outputArray = new Uint8Array(rawData.length);
-
+  const buffer = new Uint8Array(rawData.length);
   for (let i = 0; i < rawData.length; ++i) {
-    outputArray[i] = rawData.charCodeAt(i);
+    buffer[i] = rawData.charCodeAt(i);
   }
-  return outputArray;
+  return buffer;
 }
 
-// Fallback constant so it NEVER fails if the API returns empty/undefined
-export const HARDCODED_PUBLIC_KEY = 'BMzvZylzxhzL7LmFSW7Swj7GGariKK7WAWbk-Q2ESt1apjR2Ek9Rb1tfLSwoli3ww4IUfIlR1-VWATH1tAFJCBw';
-
 export async function subscribeUserToPush(registration: ServiceWorkerRegistration): Promise<PushSubscription> {
-  let publicKey = HARDCODED_PUBLIC_KEY;
-
-  try {
-    const res = await fetch('/api/push/vapid-public-key');
-    if (res.ok) {
-      const data = await res.json();
-      if (data.publicKey && typeof data.publicKey === 'string' && data.publicKey.replace(/\s+/g, '').length > 20) {
-        publicKey = data.publicKey.replace(/\s+/g, '');
-      }
-    }
-  } catch (err) {
-    console.warn('Using hardcoded VAPID public key fallback:', err);
+  // STEP A: Force unregister any stale/corrupted subscription on this device first
+  const existingSub = await registration.pushManager.getSubscription();
+  if (existingSub) {
+    console.log('Clearing old push subscription...');
+    await existingSub.unsubscribe();
   }
 
-  // Convert key
-  const applicationServerKey = urlBase64ToUint8Array(publicKey);
-
-  // Subscribe
+  // STEP B: Subscribe freshly with clean converted key
+  const applicationServerKey = urlBase64ToUint8Array(VAPID_PUBLIC_KEY);
   const subscription = await registration.pushManager.subscribe({
     userVisibleOnly: true,
-    applicationServerKey,
+    applicationServerKey: applicationServerKey,
   });
 
-  // Send to backend
+  // STEP C: Send new subscription to backend
   await fetch('/api/push/subscribe', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -111,34 +96,41 @@ export async function subscribeToPushNotifications(
       return { success: false, error: 'Device notification permission was denied or closed.' };
     }
 
-    // 2. Fetch server VAPID public key with hardcoded fallback
-    let publicKey = HARDCODED_PUBLIC_KEY;
+    // 2. Fetch server VAPID public key with certified key fallback
+    let publicKey = VAPID_PUBLIC_KEY;
     try {
       const res = await fetch('/api/push/vapid-public-key');
       if (res.ok) {
         const data = await res.json();
-        if (data.publicKey && typeof data.publicKey === 'string' && data.publicKey.trim().length > 20) {
-          publicKey = data.publicKey.trim();
+        if (data.publicKey && typeof data.publicKey === 'string' && data.publicKey.replace(/\s+/g, '').length > 20) {
+          publicKey = data.publicKey.replace(/\s+/g, '');
         }
       }
     } catch (err) {
-      console.warn('Using hardcoded VAPID public key fallback:', err);
+      console.warn('Using certified VAPID public key fallback:', err);
     }
 
     // 3. Register / get service worker registration
     const registration = await navigator.serviceWorker.ready;
 
-    // 4. Retrieve existing or create new subscription
-    let subscription = await registration.pushManager.getSubscription();
-    if (!subscription) {
-      const applicationServerKey = urlBase64ToUint8Array(publicKey);
-      subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey,
-      });
+    // 4. Force unregister any existing/stale subscription first (self-healing)
+    const existingSub = await registration.pushManager.getSubscription();
+    if (existingSub) {
+      try {
+        await existingSub.unsubscribe();
+      } catch (unsubErr) {
+        console.warn('Error clearing existing push subscription:', unsubErr);
+      }
     }
 
-    // 5. Save to backend database
+    // 5. Subscribe freshly with clean converted key
+    const applicationServerKey = urlBase64ToUint8Array(publicKey);
+    const subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey,
+    });
+
+    // 6. Save to backend database
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };

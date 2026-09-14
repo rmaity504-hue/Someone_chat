@@ -10,10 +10,10 @@ export const REQUIRE_EMAIL_VERIFICATION = false;
 export const VAPID_CONFIG = {
   publicKey:
     process.env.VAPID_PUBLIC_KEY ||
-    'BMzvZylzxhzL7LmFSW7Swj7GGariKK7WAWbk-Q2ESt1apjR2Ek9Rb1tfLSwoli3ww4IUfIlR1-VWATH1tAFJCBw',
+    'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuNkr3qBUYhHBQFLXYp5Nksh8U',
   privateKey:
     process.env.VAPID_PRIVATE_KEY ||
-    'tZ9kly49ai8KYQQU_11mVSk6VLjzUSHK-xH6vgncKak',
+    'UUxI4Ovh-mcv0ZsITx-n8v6Z_h_R9i2P0x1e3Q5a7sU',
   subject:
     process.env.VAPID_SUBJECT ||
     'mailto:someone.chat.app@gmail.com',
