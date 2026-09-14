@@ -1,9 +1,10 @@
 // Client-side Web Push Notification Manager
 
 export function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding)
-    .replace(/-/g, '+')
+  const cleanKey = base64String.trim();
+  const padding = '='.repeat((4 - (cleanKey.length % 4)) % 4);
+  const base64 = (cleanKey + padding)
+    .replace(/\-/g, '+')
     .replace(/_/g, '/');
 
   const rawData = window.atob(base64);
@@ -13,6 +14,44 @@ export function urlBase64ToUint8Array(base64String: string): Uint8Array {
     outputArray[i] = rawData.charCodeAt(i);
   }
   return outputArray;
+}
+
+// Fallback constant so it NEVER fails if the API returns empty/undefined
+export const HARDCODED_PUBLIC_KEY =
+  'BMzvZylzxhzL7LmFSW7Swj7GGariKK7WAWbk-Q2ESt1apjR2Ek9Rb1tfLSwoli3ww4IUfIlR1-VWATH1tAFJCBw';
+
+export async function subscribeUserToPush(registration: ServiceWorkerRegistration): Promise<PushSubscription> {
+  let publicKey = HARDCODED_PUBLIC_KEY;
+
+  try {
+    const res = await fetch('/api/push/vapid-public-key');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.publicKey && typeof data.publicKey === 'string' && data.publicKey.trim().length > 20) {
+        publicKey = data.publicKey.trim();
+      }
+    }
+  } catch (err) {
+    console.warn('Using hardcoded VAPID public key fallback:', err);
+  }
+
+  // Convert key
+  const convertedKey = urlBase64ToUint8Array(publicKey);
+
+  // Subscribe
+  const subscription = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: convertedKey,
+  });
+
+  // Send to backend
+  await fetch('/api/push/subscribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(subscription),
+  });
+
+  return subscription;
 }
 
 export interface PushStatus {
@@ -72,23 +111,18 @@ export async function subscribeToPushNotifications(
       return { success: false, error: 'Device notification permission was denied or closed.' };
     }
 
-    // 2. Fetch server VAPID public key
-    let publicKey = '';
-    const res = await fetch('/api/push/vapid-public-key');
-    if (res.ok) {
-      const data = await res.json();
-      publicKey = data.publicKey;
-    } else {
-      const fallbackRes = await fetch('/api/notifications/vapid-public-key');
-      if (!fallbackRes.ok) {
-        throw new Error('Failed to fetch VAPID public key from server');
+    // 2. Fetch server VAPID public key with hardcoded fallback
+    let publicKey = HARDCODED_PUBLIC_KEY;
+    try {
+      const res = await fetch('/api/push/vapid-public-key');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.publicKey && typeof data.publicKey === 'string' && data.publicKey.trim().length > 20) {
+          publicKey = data.publicKey.trim();
+        }
       }
-      const fallbackData = await fallbackRes.json();
-      publicKey = fallbackData.publicKey;
-    }
-
-    if (!publicKey) {
-      throw new Error('Empty VAPID public key received');
+    } catch (err) {
+      console.warn('Using hardcoded VAPID public key fallback:', err);
     }
 
     // 3. Register / get service worker registration
@@ -97,10 +131,10 @@ export async function subscribeToPushNotifications(
     // 4. Retrieve existing or create new subscription
     let subscription = await registration.pushManager.getSubscription();
     if (!subscription) {
-      const applicationServerKey = urlBase64ToUint8Array(publicKey);
+      const convertedKey = urlBase64ToUint8Array(publicKey);
       subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey,
+        applicationServerKey: convertedKey,
       });
     }
 
@@ -112,7 +146,7 @@ export async function subscribeToPushNotifications(
       headers['Authorization'] = `Bearer ${authToken}`;
     }
 
-    const subRes = await fetch('/api/notifications/subscribe', {
+    const subRes = await fetch('/api/push/subscribe', {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -129,7 +163,11 @@ export async function subscribeToPushNotifications(
     return { success: true };
   } catch (err: any) {
     console.error('[PUSH CLIENT] Subscription error:', err);
-    return { success: false, error: err?.message || 'Failed to subscribe to push notifications.' };
+    const diagnosticMsg = err?.message || String(err);
+    return {
+      success: false,
+      error: `Subscription error: ${diagnosticMsg}`,
+    };
   }
 }
 

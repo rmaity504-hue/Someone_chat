@@ -612,8 +612,13 @@ apiRouter.get('/notifications/vapid-public-key', (_req: Request, res: Response):
   }
 });
 
-apiRouter.post('/notifications/subscribe', (req: Request, res: Response): void => {
-  const { subscription, role } = req.body;
+// Push subscription endpoints (/api/push/subscribe and /api/notifications/subscribe)
+const handlePushSubscribe = (req: Request, res: Response): void => {
+  // Support both { subscription: PushSubscription, role } and raw PushSubscription body
+  const body = req.body || {};
+  const subscription = body.endpoint && body.keys ? body : body.subscription;
+  const role = body.role;
+
   if (
     !subscription ||
     !subscription.endpoint ||
@@ -643,7 +648,10 @@ apiRouter.post('/notifications/subscribe', (req: Request, res: Response): void =
 
   const record = savePushSubscription(subscription, userId, userRole);
   res.json({ success: true, subscriptionId: record.id });
-});
+};
+
+apiRouter.post('/push/subscribe', handlePushSubscribe);
+apiRouter.post('/notifications/subscribe', handlePushSubscribe);
 
 apiRouter.post('/notifications/unsubscribe', (req: Request, res: Response): void => {
   const { endpoint } = req.body;
