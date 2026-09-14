@@ -1,10 +1,11 @@
 // Client-side Web Push Notification Manager
 
 export function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  const cleanKey = base64String.trim();
+  // Strip all whitespaces, newlines, carriage returns
+  const cleanKey = base64String.replace(/\s+/g, '');
   const padding = '='.repeat((4 - (cleanKey.length % 4)) % 4);
   const base64 = (cleanKey + padding)
-    .replace(/\-/g, '+')
+    .replace(/-/g, '+')
     .replace(/_/g, '/');
 
   const rawData = window.atob(base64);
@@ -17,8 +18,7 @@ export function urlBase64ToUint8Array(base64String: string): Uint8Array {
 }
 
 // Fallback constant so it NEVER fails if the API returns empty/undefined
-export const HARDCODED_PUBLIC_KEY =
-  'BMzvZylzxhzL7LmFSW7Swj7GGariKK7WAWbk-Q2ESt1apjR2Ek9Rb1tfLSwoli3ww4IUfIlR1-VWATH1tAFJCBw';
+export const HARDCODED_PUBLIC_KEY = 'BMzvZylzxhzL7LmFSW7Swj7GGariKK7WAWbk-Q2ESt1apjR2Ek9Rb1tfLSwoli3ww4IUfIlR1-VWATH1tAFJCBw';
 
 export async function subscribeUserToPush(registration: ServiceWorkerRegistration): Promise<PushSubscription> {
   let publicKey = HARDCODED_PUBLIC_KEY;
@@ -27,8 +27,8 @@ export async function subscribeUserToPush(registration: ServiceWorkerRegistratio
     const res = await fetch('/api/push/vapid-public-key');
     if (res.ok) {
       const data = await res.json();
-      if (data.publicKey && typeof data.publicKey === 'string' && data.publicKey.trim().length > 20) {
-        publicKey = data.publicKey.trim();
+      if (data.publicKey && typeof data.publicKey === 'string' && data.publicKey.replace(/\s+/g, '').length > 20) {
+        publicKey = data.publicKey.replace(/\s+/g, '');
       }
     }
   } catch (err) {
@@ -36,12 +36,12 @@ export async function subscribeUserToPush(registration: ServiceWorkerRegistratio
   }
 
   // Convert key
-  const convertedKey = urlBase64ToUint8Array(publicKey);
+  const applicationServerKey = urlBase64ToUint8Array(publicKey);
 
   // Subscribe
   const subscription = await registration.pushManager.subscribe({
     userVisibleOnly: true,
-    applicationServerKey: convertedKey,
+    applicationServerKey,
   });
 
   // Send to backend
@@ -131,10 +131,10 @@ export async function subscribeToPushNotifications(
     // 4. Retrieve existing or create new subscription
     let subscription = await registration.pushManager.getSubscription();
     if (!subscription) {
-      const convertedKey = urlBase64ToUint8Array(publicKey);
+      const applicationServerKey = urlBase64ToUint8Array(publicKey);
       subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: convertedKey,
+        applicationServerKey,
       });
     }
 
