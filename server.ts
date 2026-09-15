@@ -76,8 +76,7 @@ async function startServer() {
       if (extClient.isAlive === false) {
         if (extClient.authenticatedUserId) {
           console.log(`[WS HEARTBEAT] Terminating stale/unresponsive connection for user: ${extClient.authenticatedUserId}`);
-          matchmaker.handleUserDisconnect(extClient.authenticatedUserId);
-          matchmaker.unregisterClient(extClient.authenticatedUserId);
+          matchmaker.unregisterClient(extClient.authenticatedUserId, extClient, false);
         }
         return client.terminate();
       }
@@ -191,7 +190,8 @@ async function startServer() {
         extWs.messageTimestamps.push(now);
 
         const payload = JSON.parse(raw.toString());
-        const { event, data } = payload;
+        const event = payload.event || payload.type;
+        const data = payload.data || payload;
 
         if (event === 'auth') {
           const { token } = data;
@@ -229,6 +229,14 @@ async function startServer() {
         }
 
         switch (event) {
+          case 'reconnect':
+          case 'session:reconnect':
+          case 'session:resume': {
+            const targetRoomId = data?.sessionId || data?.roomId || payload.sessionId || payload.roomId;
+            matchmaker.handleReconnect(currentUserId, targetRoomId);
+            break;
+          }
+
           case 'heartbeat':
             matchmaker.updateHeartbeat(currentUserId);
             ws.send(JSON.stringify({ event: 'heartbeat:ack' }));
@@ -493,9 +501,10 @@ async function startServer() {
       }
     });
 
-    ws.on('close', () => {
+    ws.on('close', (code) => {
       if (extWs.authenticatedUserId) {
-        matchmaker.unregisterClient(extWs.authenticatedUserId, ws);
+        const isIntentional = code === 1000;
+        matchmaker.unregisterClient(extWs.authenticatedUserId, ws, isIntentional);
       }
       scheduleOnlineCountBroadcast();
     });

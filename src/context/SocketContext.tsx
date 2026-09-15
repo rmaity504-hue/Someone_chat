@@ -4,6 +4,8 @@ import { socketService, SocketConnectionStatus, SocketEventHandler } from '../se
 interface SocketContextValue {
   socketConnected: boolean;
   connectionStatus: SocketConnectionStatus;
+  reconnectAttempts: number;
+  maxReconnectAttempts: number;
   sendEvent: (event: string, data?: any) => boolean;
   subscribe: (event: string, handler: SocketEventHandler) => () => void;
   reconnect: () => void;
@@ -15,10 +17,14 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [connectionStatus, setConnectionStatus] = useState<SocketConnectionStatus>(
     socketService.getStatus()
   );
+  const [reconnectAttempts, setReconnectAttempts] = useState<number>(
+    socketService.getReconnectAttempts()
+  );
 
   useEffect(() => {
     const unsubscribe = socketService.onStatusChange((status) => {
       setConnectionStatus(status);
+      setReconnectAttempts(socketService.getReconnectAttempts());
     });
     return unsubscribe;
   }, []);
@@ -32,15 +38,14 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, []);
 
   const reconnect = useCallback(() => {
-    const token = localStorage.getItem('someone_token');
-    if (token) {
-      socketService.connect(token);
-    }
+    socketService.retryNow();
   }, []);
 
   const value: SocketContextValue = {
     socketConnected: connectionStatus === 'connected',
     connectionStatus,
+    reconnectAttempts,
+    maxReconnectAttempts: socketService.getMaxReconnectAttempts(),
     sendEvent,
     subscribe,
     reconnect,

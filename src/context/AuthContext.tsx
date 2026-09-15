@@ -1,8 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { UserProfile, ChatMessage, Friendship, AdminStats } from '../types.js';
-import { getWebSocketUrl, socketService } from '../services/socket.js';
+import { getWebSocketUrl, socketService, SocketConnectionStatus } from '../services/socket.js';
 import { playMatchChime, playMessageSound, playDisconnectSound } from '../utils/feedback.js';
-import { subscribeToPushNotifications } from '../utils/pushNotifications.js';
 import { filterChatMessage } from '../utils/privacyFilter.js';
 
 export interface VolunteerRequest {
@@ -31,6 +30,10 @@ interface AuthContextType {
   token: string | null;
   loading: boolean;
   wsConnected: boolean;
+  connectionStatus: SocketConnectionStatus;
+  reconnectAttempts: number;
+  partnerReconnecting: boolean;
+  retryConnection: () => void;
   matchingState: MatchingState;
   activeSession: ActiveSession | null;
   messages: ChatMessage[];
@@ -85,6 +88,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [wsConnected, setWsConnected] = useState<boolean>(false);
+  const [connectionStatus, setConnectionStatus] = useState<SocketConnectionStatus>(
+    socketService.getStatus()
+  );
+  const [reconnectAttempts, setReconnectAttempts] = useState<number>(0);
+  const [partnerReconnecting, setPartnerReconnecting] = useState<boolean>(false);
 
   const [matchingState, setMatchingState] = useState<MatchingState>({ state: 'idle' });
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
@@ -182,10 +190,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Bind connection status directly to the singleton socket service
   useEffect(() => {
     const unsub = socketService.onStatusChange((status) => {
+      setConnectionStatus(status);
       setWsConnected(status === 'connected');
+      setReconnectAttempts(socketService.getReconnectAttempts());
     });
     return unsub;
   }, []);
+
+  // Sync activeSession info to socket service for session re-attachment
+  useEffect(() => {
+    if (activeSession && user) {
+      socketService.setActiveSessionInfo(activeSession.roomId, user.id);
+    } else {
+      socketService.setActiveSessionInfo(null, null);
+    }
+  }, [activeSession?.roomId, user?.id]);
 
   // Persistent WebSocket lifecycle and event subscriptions via singleton service
   useEffect(() => {
@@ -310,6 +329,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const onPartnerDisconnectedHandler = (data: any) => {
       playDisconnectSound();
+      setPartnerReconnecting(false);
+      socketService.clearActiveSessionInfo();
+      socketService.cancelReconnect();
       setActiveSession(null);
       setMessages([]);
       messagesRef.current = [];
@@ -328,8 +350,52 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setSystemNotification(data.message);
     });
 
+    const unsubSessionResumed = socketService.on('session:resumed', (data: any) => {
+      console.log('[AuthContext] Session resumed successfully after reconnect:', data);
+      setPartnerReconnecting(false);
+      if (data?.roomId) {
+        setActiveSession((prev) => {
+          if (prev && prev.roomId === data.roomId) {
+            return {
+              ...prev,
+              partnerId: data.partnerId || prev.partnerId,
+              partnerDisplayName: data.partnerDisplayName || prev.partnerDisplayName,
+            };
+          }
+          return {
+            roomId: data.roomId,
+            partnerId: data.partnerId,
+            partnerDisplayName: data.partnerDisplayName || 'Someone',
+            isSimulator: data.isSimulator,
+            matchedTopics: data.matchedTopics,
+          };
+        });
+      }
+      if (Array.isArray(data?.messages) && data.messages.length > 0) {
+        setMessages((prev) => {
+          const existingIds = new Set(prev.map((m) => m.id));
+          const missing = data.messages.filter((m: ChatMessage) => !existingIds.has(m.id));
+          if (missing.length === 0) return prev;
+          const merged = [...prev, ...missing];
+          merged.sort((a, b) => a.timestamp - b.timestamp);
+          return merged;
+        });
+      }
+    });
+
+    const unsubPartnerStatus = socketService.on('session:partner_status', (data: any) => {
+      if (data?.status === 'reconnecting') {
+        setPartnerReconnecting(true);
+      } else if (data?.status === 'connected') {
+        setPartnerReconnecting(false);
+      }
+    });
+
     const unsubSessionEnded = socketService.on('session:ended', (data) => {
       playDisconnectSound();
+      setPartnerReconnecting(false);
+      socketService.clearActiveSessionInfo();
+      socketService.cancelReconnect();
       const hadMessages = messagesRef.current.length > 0 || (data.messageCount && data.messageCount > 0);
       setActiveSession(null);
       setMessages([]);
@@ -356,6 +422,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unsubSessionEnforcement = socketService.on('session:enforcement', (data) => {
       setActiveSession(null);
       setIsPartnerTyping(false);
+      setPartnerReconnecting(false);
+      socketService.clearActiveSessionInfo();
+      socketService.cancelReconnect();
       setMatchingState({ state: 'idle' });
       setMessages([]);
       setSystemNotification(data.message);
@@ -396,6 +465,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       unsubPartnerDisconnected();
       unsubPartnerDisconnectedUpper();
       unsubChatBlocked();
+      unsubSessionResumed();
+      unsubPartnerStatus();
       unsubSessionEnded();
       unsubSessionEnforcement();
       unsubFriendshipCreated();
@@ -435,6 +506,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const skipToNext = (topics?: string[]) => {
+    socketService.clearActiveSessionInfo();
+    socketService.cancelReconnect();
+    setPartnerReconnecting(false);
     socketService.send('chat:next', { topics });
     setActiveSession(null);
     setMessages([]);
@@ -478,6 +552,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const disconnectChat = () => {
+    socketService.clearActiveSessionInfo();
+    socketService.cancelReconnect();
+    setPartnerReconnecting(false);
     if (activeSession) {
       socketService.send('chat:disconnect', { roomId: activeSession.roomId });
     }
@@ -490,6 +567,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const quickEmergencyExit = () => {
+    socketService.clearActiveSessionInfo();
+    socketService.cancelReconnect();
+    setPartnerReconnecting(false);
     if (activeSession) {
       socketService.send('chat:disconnect', { roomId: activeSession.roomId });
     }
@@ -502,6 +582,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setMatchingState({ state: 'idle' });
     setSystemNotification(null);
   };
+
+  const retryConnection = useCallback(() => {
+    socketService.retryNow();
+  }, []);
 
   const dismissSessionClosure = () => {
     setSessionClosureActive(false);
@@ -593,15 +677,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (res.ok) {
         const data = await res.json();
         setUser(data.user);
-
-        // When activating listener mode, subscribe this device to Web Push notifications
-        // so the user receives native alerts when visitors enter the queue while the app is closed.
-        if (active) {
-          subscribeToPushNotifications(token, data.user.role || 'volunteer').catch((err) => {
-            console.warn('[AUTH] Push notification subscription deferred or dismissed:', err);
-          });
-        }
-
         return true;
       }
     } catch (err) {
@@ -761,6 +836,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         token,
         loading,
         wsConnected,
+        connectionStatus,
+        reconnectAttempts,
+        partnerReconnecting,
+        retryConnection,
         matchingState,
         activeSession,
         messages,

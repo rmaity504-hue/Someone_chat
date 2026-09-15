@@ -4,7 +4,6 @@ import { MatchSession, ChatMessage } from '../src/types.js';
 import { SafetyEvaluation, sanitizeOffPlatformContent } from './safety.js';
 import crypto from 'crypto';
 import { simulator, BOT_USER_ID, BOT_NAME } from './simulator.js';
-import { notifyActiveListenersWhenQueueEnters } from './pushNotifications.js';
 
 export interface ConnectedClient {
   userId: string;
@@ -23,6 +22,7 @@ export interface WaitingUser {
 export const TOPIC_FALLBACK_THRESHOLD_MS = 7000; // 7 seconds before matching without overlapping topics
 export const VOLUNTEER_FALLBACK_THRESHOLD_MS = 45000; // 45 seconds waiting before volunteer fallback
 export const NO_ONE_AVAILABLE_THRESHOLD_MS = 75000; // 75 seconds total before showing calm "No one available right now"
+export const RECONNECT_GRACE_PERIOD_MS = 25000; // 25 seconds grace period for network drops & Wi-Fi switching
 
 export class Matchmaker {
   private clients: Map<string, ConnectedClient> = new Map(); // userId -> ConnectedClient
@@ -33,7 +33,7 @@ export class Matchmaker {
   private roomKeepInTouchRequests: Map<string, Set<string>> = new Map(); // roomId -> Set of userIds who tapped Keep in Touch
 
   constructor() {
-    // Periodic check for matching & volunteer fallback & heartbeat cleanup
+    // Periodic check for matching & volunteer fallback & heartbeat cleanup & reconnect grace periods
     setInterval(() => this.tick(), 2000);
   }
 
@@ -50,7 +50,7 @@ export class Matchmaker {
     }
   }
 
-  unregisterClient(userId: string, closingWs?: WebSocket) {
+  unregisterClient(userId: string, closingWs?: WebSocket, isIntentional: boolean = false) {
     const existing = this.clients.get(userId);
     if (closingWs && existing && existing.ws !== closingWs) {
       // A new socket connection has already been established by this user
@@ -58,8 +58,10 @@ export class Matchmaker {
     }
     this.clients.delete(userId);
     this.leaveMatching(userId);
-    this.handleUserDisconnect(userId);
-    db.updateUser(userId, { status: 'offline' });
+    this.handleUserDisconnect(userId, isIntentional);
+    if (isIntentional) {
+      db.updateUser(userId, { status: 'offline' });
+    }
   }
 
   /**
@@ -144,13 +146,6 @@ export class Matchmaker {
     // Try immediate match
     this.tryMatch(userId);
 
-    // If user is waiting in pool, alert active listeners whose WebSocket is disconnected/backgrounded
-    if (this.waitingPool.has(userId)) {
-      notifyActiveListenersWhenQueueEnters(userId, new Set(this.clients.keys())).catch((err) => {
-        console.error('[Matchmaker] Error alerting listeners of queue entry:', err);
-      });
-    }
-
     return { success: true };
   }
 
@@ -183,7 +178,21 @@ export class Matchmaker {
         try {
           client.ws.terminate();
         } catch {}
-        this.unregisterClient(userId);
+        this.unregisterClient(userId, undefined, false);
+      }
+    }
+
+    // Monitor disconnected users in active sessions for grace period expiration (25s)
+    for (const session of Array.from(this.activeSessions.values())) {
+      if (session.status === 'active' && session.disconnectedUserIds) {
+        for (const [discUserId, discTime] of Object.entries(session.disconnectedUserIds)) {
+          if (now - discTime >= RECONNECT_GRACE_PERIOD_MS) {
+            console.log(`[Matchmaker] Grace period (${RECONNECT_GRACE_PERIOD_MS}ms) expired for user ${discUserId} in room ${session.roomId}`);
+            delete session.disconnectedUserIds[discUserId];
+            this.endSession(session.roomId, 'Partner connection timed out.');
+            break;
+          }
+        }
       }
     }
 
@@ -333,10 +342,6 @@ export class Matchmaker {
     });
 
     if (availableVolunteers.length === 0) {
-      // Trigger Web Push notification fallback to backgrounded/disconnected listeners
-      notifyActiveListenersWhenQueueEnters(waitingUserId, new Set(this.clients.keys())).catch((err) => {
-        console.error('[Matchmaker] Error triggering listener push fallback:', err);
-      });
       return;
     }
 
@@ -573,6 +578,13 @@ export class Matchmaker {
       text: sanitized,
       timestamp: Date.now(),
     };
+
+    // Cache recent messages on session for instant re-attachment replay
+    session.recentMessages = session.recentMessages || [];
+    session.recentMessages.push(msg);
+    if (session.recentMessages.length > 50) {
+      session.recentMessages.shift();
+    }
 
     // Broadcast message to both sender and recipient
     this.sendToUser(senderId, 'chat:message', msg);
@@ -816,18 +828,111 @@ export class Matchmaker {
     }
   }
 
-  handleUserDisconnect(userId: string) {
+  handleUserDisconnect(userId: string, isIntentional: boolean = false) {
     const roomId = this.userToRoom.get(userId);
     if (roomId) {
       const session = this.activeSessions.get(roomId);
-      if (session && session.status === 'waiting_connect') {
+      if (!session) {
+        this.userToRoom.delete(userId);
+        return;
+      }
+
+      if (session.status === 'waiting_connect') {
         const otherUserId = session.user1Id === userId ? session.user2Id : session.user1Id;
         this.sendToUser(otherUserId, 'match:failed', {
           message: 'Partner disconnected.',
         });
+        this.endSession(roomId, 'Partner disconnected.');
+        return;
       }
-      this.endSession(roomId, 'Partner disconnected.');
+
+      if (isIntentional) {
+        this.endSession(roomId, 'Partner left the conversation.');
+        return;
+      }
+
+      // If active conversation, enter grace period instead of immediately tearing down
+      if (session.status === 'active') {
+        session.disconnectedUserIds = session.disconnectedUserIds || {};
+        session.disconnectedUserIds[userId] = Date.now();
+
+        const partnerId = session.user1Id === userId ? session.user2Id : session.user1Id;
+        console.log(`[Matchmaker] User ${userId} disconnected abnormally. Entering ${RECONNECT_GRACE_PERIOD_MS}ms grace period for room ${roomId}`);
+
+        // Notify partner that user is temporarily reconnecting
+        this.sendToUser(partnerId, 'session:partner_status', {
+          status: 'reconnecting',
+          userId,
+        });
+      } else {
+        this.endSession(roomId, 'Partner disconnected.');
+      }
     }
+  }
+
+  handleReconnect(userId: string, targetRoomId?: string): { success: boolean; session?: MatchSession; error?: string } {
+    let roomId = targetRoomId || this.userToRoom.get(userId);
+    if (!roomId) {
+      // Scan active sessions in case userToRoom was momentarily desynchronized
+      for (const sess of this.activeSessions.values()) {
+        if (sess.status === 'active' && (sess.user1Id === userId || sess.user2Id === userId)) {
+          roomId = sess.roomId;
+          break;
+        }
+      }
+    }
+
+    if (!roomId) {
+      this.sendToUser(userId, 'session:ended', {
+        reason: 'Previous conversation is no longer active.',
+      });
+      return { success: false, error: 'No active session found.' };
+    }
+
+    const session = this.activeSessions.get(roomId);
+    if (!session || session.status !== 'active') {
+      this.userToRoom.delete(userId);
+      this.sendToUser(userId, 'session:ended', {
+        roomId,
+        reason: 'Previous conversation has ended.',
+      });
+      return { success: false, error: 'Session has ended.' };
+    }
+
+    // Verify user belongs to this session
+    if (session.user1Id !== userId && session.user2Id !== userId) {
+      return { success: false, error: 'Unauthorized for this session.' };
+    }
+
+    // Clear disconnected timestamp
+    if (session.disconnectedUserIds) {
+      delete session.disconnectedUserIds[userId];
+    }
+    this.userToRoom.set(userId, roomId);
+    db.updateUser(userId, { status: 'connected' });
+
+    const partnerId = session.user1Id === userId ? session.user2Id : session.user1Id;
+    const partnerName = session.user1Id === userId ? session.user2Name : session.user1Name;
+
+    console.log(`[Matchmaker] User ${userId} successfully re-attached to room ${roomId}`);
+
+    // Replay session state and message history to reconnected client
+    this.sendToUser(userId, 'session:resumed', {
+      roomId: session.roomId,
+      partnerId,
+      partnerDisplayName: partnerName,
+      isSimulator: session.isSimulator,
+      matchedTopics: session.matchedTopics,
+      messages: session.recentMessages || [],
+    });
+
+    // Notify partner that connection has restored
+    this.sendToUser(partnerId, 'session:partner_status', {
+      status: 'connected',
+      userId,
+    });
+
+    return { success: true, session };
   }
 
   getActiveSessionsCount(): number {

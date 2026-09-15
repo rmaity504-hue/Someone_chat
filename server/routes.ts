@@ -6,12 +6,6 @@ import {
   sendDiagnosticTestEmail,
 } from './email.js';
 import { REQUIRE_EMAIL_VERIFICATION } from './config.js';
-import {
-  getVapidPublicKey,
-  savePushSubscription,
-  deletePushSubscription,
-  sendNotificationToSubscription,
-} from './pushNotifications.js';
 
 export const apiRouter = express.Router();
 
@@ -581,107 +575,6 @@ apiRouter.post('/volunteer/toggle', volunteerLimiter, authenticate, (req: Reques
   });
 
   res.json({ success: true, user: db.toPublicProfile(updated!) });
-});
-
-// ----------------------------------------------------
-// WEB PUSH NOTIFICATIONS FOR ADMIN / LISTENERS
-// ----------------------------------------------------
-
-// Direct VAPID Public Key endpoints (/api/push/vapid-public-key and /api/notifications/vapid-public-key)
-apiRouter.get('/push/vapid-public-key', (_req: Request, res: Response): void => {
-  res.json({
-    publicKey:
-      process.env.VAPID_PUBLIC_KEY ||
-      'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuNkr3qBUYhHBQFLXYp5Nksh8U',
-  });
-});
-
-apiRouter.get('/notifications/vapid-public-key', (_req: Request, res: Response): void => {
-  try {
-    const key =
-      process.env.VAPID_PUBLIC_KEY ||
-      getVapidPublicKey() ||
-      'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuNkr3qBUYhHBQFLXYp5Nksh8U';
-    res.json({ publicKey: key });
-  } catch (err: any) {
-    res.json({
-      publicKey:
-        process.env.VAPID_PUBLIC_KEY ||
-        'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuNkr3qBUYhHBQFLXYp5Nksh8U',
-    });
-  }
-});
-
-// Push subscription endpoints (/api/push/subscribe and /api/notifications/subscribe)
-const handlePushSubscribe = (req: Request, res: Response): void => {
-  // Support both { subscription: PushSubscription, role } and raw PushSubscription body
-  const body = req.body || {};
-  const subscription = body.endpoint && body.keys ? body : body.subscription;
-  const role = body.role;
-
-  if (
-    !subscription ||
-    !subscription.endpoint ||
-    !subscription.keys ||
-    !subscription.keys.p256dh ||
-    !subscription.keys.auth
-  ) {
-    res.status(400).json({ error: 'Valid PushSubscription object with endpoint and keys is required.' });
-    return;
-  }
-
-  // Check optional authorization header
-  let userId: string | null = null;
-  let userRole = role || 'listener';
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.slice(7);
-    const resolvedUserId = db.getUserIdByToken(token);
-    if (resolvedUserId) {
-      userId = resolvedUserId;
-      const user = db.getUserById(resolvedUserId);
-      if (user) {
-        userRole = user.role;
-      }
-    }
-  }
-
-  const record = savePushSubscription(subscription, userId, userRole);
-  res.json({ success: true, subscriptionId: record.id });
-};
-
-apiRouter.post('/push/subscribe', handlePushSubscribe);
-apiRouter.post('/notifications/subscribe', handlePushSubscribe);
-
-apiRouter.post('/notifications/unsubscribe', (req: Request, res: Response): void => {
-  const { endpoint } = req.body;
-  if (!endpoint) {
-    res.status(400).json({ error: 'Endpoint is required to unsubscribe.' });
-    return;
-  }
-  deletePushSubscription(endpoint);
-  res.json({ success: true });
-});
-
-apiRouter.post('/notifications/test', authenticate, async (req: Request, res: Response): Promise<void> => {
-  const user = (req as any).user;
-  const userSubs = db.getPushSubscriptionsByUserId(user.id);
-  if (userSubs.length === 0) {
-    res.status(404).json({ error: 'No push subscription found for this account. Please enable notifications first.' });
-    return;
-  }
-
-  let sent = 0;
-  for (const sub of userSubs) {
-    const ok = await sendNotificationToSubscription(sub, {
-      title: 'Someone is awake',
-      body: 'A visitor is waiting to talk. Tap to enter the conversation.',
-      url: '/chat',
-    });
-    if (ok) sent++;
-  }
-
-  res.json({ success: true, sentCount: sent });
 });
 
 // ----------------------------------------------------

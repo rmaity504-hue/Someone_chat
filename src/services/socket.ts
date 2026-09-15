@@ -25,7 +25,7 @@ export function getWebSocketUrl(token?: string | null): string {
   return baseUrl;
 }
 
-export type SocketConnectionStatus = 'disconnected' | 'connecting' | 'connected';
+export type SocketConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'offline';
 export type SocketEventHandler = (data: any) => void;
 export type StatusChangeHandler = (status: SocketConnectionStatus) => void;
 
@@ -34,9 +34,12 @@ class SocketService {
   private token: string | null = null;
   private status: SocketConnectionStatus = 'disconnected';
   private reconnectAttempts = 0;
+  private readonly maxReconnectAttempts = 5;
   private reconnectTimer: any = null;
   private heartbeatTimer: any = null;
   private intentionalClose = false;
+  private activeSessionId: string | null = null;
+  private activeUserId: string | null = null;
 
   private listeners: Map<string, Set<SocketEventHandler>> = new Map();
   private statusListeners: Set<StatusChangeHandler> = new Set();
@@ -45,10 +48,10 @@ class SocketService {
   constructor() {
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => {
-        if (this.token && this.status === 'disconnected') {
-          console.log('[WebSocket] Network back online, reconnecting...');
-          this.reconnectAttempts = 0;
-          this.connect(this.token);
+        const storedToken = this.token || localStorage.getItem('someone_token');
+        if (storedToken && (this.status === 'disconnected' || this.status === 'offline' || this.status === 'reconnecting')) {
+          console.log('[WebSocket] Network back online, resuming connection...');
+          this.retryNow();
         }
       });
     }
@@ -56,6 +59,28 @@ class SocketService {
 
   public getStatus(): SocketConnectionStatus {
     return this.status;
+  }
+
+  public getReconnectAttempts(): number {
+    return this.reconnectAttempts;
+  }
+
+  public getMaxReconnectAttempts(): number {
+    return this.maxReconnectAttempts;
+  }
+
+  public setActiveSessionInfo(sessionId: string | null, userId: string | null) {
+    this.activeSessionId = sessionId;
+    this.activeUserId = userId;
+  }
+
+  public clearActiveSessionInfo() {
+    this.activeSessionId = null;
+    this.activeUserId = null;
+  }
+
+  public getActiveSessionInfo(): { sessionId: string | null; userId: string | null } {
+    return { sessionId: this.activeSessionId, userId: this.activeUserId };
   }
 
   public isConnected(): boolean {
@@ -83,11 +108,11 @@ class SocketService {
     };
   }
 
-  public connect(token: string) {
+  public connect(token: string, isRetry = false) {
     if (!token) return;
 
-    // If already connected or connecting with identical token, keep existing connection
-    if (this.token === token && this.ws) {
+    // If already connected or connecting with identical token and not a forced retry, keep existing connection
+    if (!isRetry && this.token === token && this.ws) {
       if (this.ws.readyState === WebSocket.OPEN) {
         this.setStatus('connected');
         return;
@@ -105,7 +130,9 @@ class SocketService {
     const wsUrl = getWebSocketUrl(token);
     if (!wsUrl) return;
 
-    this.setStatus('connecting');
+    if (!isRetry) {
+      this.setStatus('connecting');
+    }
 
     try {
       const socket = new WebSocket(wsUrl);
@@ -122,6 +149,24 @@ class SocketService {
           socket.send(JSON.stringify({ event: 'auth', data: { token } }));
         } catch {
           // ignore
+        }
+
+        // Active session re-attachment:
+        // If the user was in an active chat room when the connection dropped,
+        // send a lightweight re-attach payload to immediately resume the session
+        if (this.activeSessionId && this.activeUserId) {
+          console.log(`[WebSocket] Sending re-attach payload for room ${this.activeSessionId}...`);
+          try {
+            const reattachPayload = {
+              type: 'reconnect',
+              sessionId: this.activeSessionId,
+              userId: this.activeUserId,
+            };
+            socket.send(JSON.stringify(reattachPayload));
+            socket.send(JSON.stringify({ event: 'reconnect', data: reattachPayload }));
+          } catch (err) {
+            console.error('[WebSocket] Failed to send re-attachment payload:', err);
+          }
         }
 
         // Flush any messages queued during connection
@@ -156,13 +201,14 @@ class SocketService {
         if (this.ws !== socket) return;
         console.log(`[WebSocket] Closed (code: ${event.code}, reason: ${event.reason || 'none'})`);
         this.stopHeartbeat();
-        this.setStatus('disconnected');
 
         // Do not auto-reconnect if closed intentionally or banned/restricted
         if (this.intentionalClose || event.code === 1000 || event.code === 4003) {
+          this.setStatus('disconnected');
           return;
         }
 
+        this.setStatus('reconnecting');
         this.scheduleReconnect();
       };
 
@@ -171,7 +217,6 @@ class SocketService {
       };
     } catch (err) {
       console.error('[WebSocket] Connection creation error:', err);
-      this.setStatus('disconnected');
       this.scheduleReconnect();
     }
   }
@@ -198,27 +243,71 @@ class SocketService {
 
   private scheduleReconnect() {
     if (this.intentionalClose || !this.token) return;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
 
-    const delay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 10000);
+    // Maximum reconnect attempts: 5 attempts before notifying user of offline state
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.warn(`[WebSocket] Reconnect attempts exhausted (${this.reconnectAttempts}/${this.maxReconnectAttempts}). Entering offline state.`);
+      this.setStatus('offline');
+      this.dispatch('connection:offline', {
+        attempts: this.reconnectAttempts,
+        maxAttempts: this.maxReconnectAttempts,
+      });
+      return;
+    }
+
+    // Base delay: 1000ms. Multiplier: 1.5x on consecutive failures up to ceiling of 10000ms (10s).
+    const baseDelay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 10000);
+    // Lightweight jitter (+- 300ms random) to prevent thundering-herd issues
+    const jitter = Math.floor(Math.random() * 600) - 300;
+    const delay = Math.max(200, Math.round(baseDelay + jitter));
+
     this.reconnectAttempts += 1;
-    console.log(`[WebSocket] Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${this.reconnectAttempts})...`);
+    this.setStatus('reconnecting');
+    console.log(`[WebSocket] Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+
+    this.dispatch('connection:reconnecting', {
+      attempt: this.reconnectAttempts,
+      maxAttempts: this.maxReconnectAttempts,
+      delayMs: delay,
+    });
 
     this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       if (!this.intentionalClose && this.token) {
-        this.connect(this.token);
+        this.connect(this.token, true);
       }
     }, delay);
+  }
+
+  public retryNow() {
+    this.cancelReconnect();
+    this.reconnectAttempts = 0;
+    this.intentionalClose = false;
+    const activeToken = this.token || (typeof localStorage !== 'undefined' ? localStorage.getItem('someone_token') : null);
+    if (activeToken) {
+      this.setStatus('reconnecting');
+      this.connect(activeToken, true);
+    }
+  }
+
+  public cancelReconnect() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
   }
 
   public disconnect(reason: string = 'Client disconnected') {
     this.intentionalClose = true;
     this.token = null;
     this.reconnectAttempts = 0;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    this.activeSessionId = null;
+    this.activeUserId = null;
+    this.cancelReconnect();
     this.cleanupSocket(true, reason);
     this.setStatus('disconnected');
     this.pendingQueue = [];

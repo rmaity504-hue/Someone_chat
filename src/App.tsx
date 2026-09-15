@@ -18,6 +18,7 @@ import { AboutPhilosophyModal } from './components/AboutPhilosophyModal.js';
 import { ContactAdminModal } from './components/ContactAdminModal.js';
 import { InstallGuideModal } from './components/InstallGuideModal.js';
 import { SessionClosureCard } from './components/SessionClosureCard.js';
+import { ConnectionStatusBar } from './components/ConnectionStatusBar.js';
 import { InstallProvider, useInstall } from './context/InstallContext.js';
 import { AlertOctagon, AlertCircle, X, MessageSquare, Info } from 'lucide-react';
 
@@ -96,6 +97,9 @@ function MainApp() {
         onOpenContactAdmin={() => setContactAdminOpen(true)}
         onChatNow={() => handleFindSomeone()}
       />
+
+      {/* Unobtrusive WebSocket Resilience & Reconnection Bar */}
+      <ConnectionStatusBar />
 
       {/* Account Enforcement Banner if Restricted/Suspended */}
       {isRestrictedOrSuspended && (

@@ -46,6 +46,11 @@ export const ChatView: React.FC = () => {
     systemNotification,
     clearNotification,
     simulateCompanionAction,
+    partnerReconnecting,
+    connectionStatus,
+    reconnectAttempts,
+    maxReconnectAttempts,
+    retryConnection,
   } = useAuth();
 
   const { isMuted, toggleMute } = useSoundMute();
@@ -278,13 +283,27 @@ export const ChatView: React.FC = () => {
       {/* Top Header */}
       <div className="px-4 py-3 border-b border-[#E7E0D8] bg-[#F6F3EE]/90 backdrop-blur-md flex items-center justify-between gap-2">
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+          <div
+            className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+              partnerReconnecting
+                ? 'bg-amber-500 animate-ping'
+                : connectionStatus === 'reconnecting'
+                ? 'bg-amber-400 animate-pulse'
+                : 'bg-emerald-500 animate-pulse'
+            }`}
+          />
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h3 id="chat-partner-name" className="font-serif text-sm font-medium text-[#2D2723] tracking-tight truncate">
                 {activeSession.partnerDisplayName}
               </h3>
-              <span className="text-[11px] text-[#8C827A] hidden xs:inline">Connected</span>
+              <span
+                className={`text-[11px] hidden xs:inline ${
+                  partnerReconnecting ? 'text-amber-600 font-medium' : 'text-[#8C827A]'
+                }`}
+              >
+                {partnerReconnecting ? 'Reconnecting...' : 'Connected'}
+              </span>
             </div>
             {/* Shared Topic Badges */}
             {activeSession.matchedTopics && activeSession.matchedTopics.length > 0 && (
@@ -369,6 +388,62 @@ export const ChatView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Partner Reconnection Banner */}
+      {partnerReconnecting && (
+        <div
+          role="status"
+          className="px-4 py-2 bg-[#FAF3EB] border-b border-[#EADFCB] flex items-center justify-between text-xs text-[#825C26] animate-fade-in"
+        >
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-amber-500 animate-ping shrink-0" />
+            <span>{activeSession.partnerDisplayName} is reconnecting...</span>
+          </div>
+          <span className="text-[11px] text-[#A37B3E]">Holding conversation open</span>
+        </div>
+      )}
+
+      {/* Local Client Reconnection Banner */}
+      {connectionStatus === 'reconnecting' && (
+        <div
+          role="status"
+          className="px-4 py-2 bg-[#FAF3EB] border-b border-[#EADFCB] flex items-center justify-between text-xs text-[#825C26] animate-fade-in"
+        >
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-amber-500 animate-ping shrink-0" />
+            <span>
+              Reconnecting to sanctuary... (Attempt {reconnectAttempts} of {maxReconnectAttempts})
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={retryConnection}
+            className="underline font-medium hover:text-[#523A16] cursor-pointer"
+          >
+            Retry now
+          </button>
+        </div>
+      )}
+
+      {/* Local Client Offline Banner */}
+      {connectionStatus === 'offline' && (
+        <div
+          role="status"
+          className="px-4 py-2 bg-[#FBEBE8] border-b border-[#F0CEC6] flex items-center justify-between text-xs text-[#A84332] animate-fade-in"
+        >
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-[#A84332] shrink-0" />
+            <span>Connection lost. Mobile network or Wi-Fi dropped.</span>
+          </div>
+          <button
+            type="button"
+            onClick={retryConnection}
+            className="px-2 py-0.5 bg-[#A84332] text-white rounded text-[11px] font-medium hover:bg-[#8D3425] cursor-pointer"
+          >
+            Reconnect
+          </button>
+        </div>
+      )}
 
       {/* Test Companion Simulator Toolbar (Development / Admin / Companion sessions) */}
       {showSimulatorTools && (
@@ -547,6 +622,14 @@ export const ChatView: React.FC = () => {
           >
             ✕
           </button>
+        </div>
+      )}
+
+      {/* Partner Reconnecting Status above Input */}
+      {partnerReconnecting && (
+        <div className="px-4 py-1.5 bg-[#FAF3EB]/90 border-t border-[#EADFCB] flex items-center justify-center gap-2 text-xs text-[#825C26]">
+          <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
+          <span>Partner is reconnecting... holding room open</span>
         </div>
       )}
 

@@ -99,6 +99,8 @@ export interface ChatMessage {
   system?: boolean;
 }
 
+export type SocketConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'offline';
+
 export interface MatchSession {
   roomId: string;
   user1Id: string;
@@ -112,6 +114,10 @@ export interface MatchSession {
   createdAt: number;
   messageCount?: number;
   postChoices?: Record<string, boolean>; // userId -> want to talk again
+  recentMessages?: ChatMessage[];
+  isSimulator?: boolean;
+  matchedTopics?: string[];
+  disconnectedUserIds?: Record<string, number>;
 }
 
 export interface Friendship {
