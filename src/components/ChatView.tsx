@@ -730,7 +730,7 @@ export const ChatView: React.FC = () => {
           </div>
         )}
 
-        <div ref={messagesEndRef} />
+        <div ref={messagesEndRef} id="chat-messages-bottom-sentinel" />
       </div>
 
       {/* Automatic Data Filter Toast (Privacy Shield) */}
@@ -843,6 +843,14 @@ export const ChatView: React.FC = () => {
             value={input}
             disabled={isSessionEnded}
             onChange={handleInputChange}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                if (input.trim() && !isSessionEnded && !isRateLimited) {
+                  handleSend(e);
+                }
+              }
+            }}
             onFocus={() => {
               setTimeout(() => scrollToBottom('smooth'), 250);
             }}

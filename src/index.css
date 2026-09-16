@@ -30,17 +30,36 @@
     -webkit-tap-highlight-color: transparent !important;
   }
 
-  /* 2. Prevent Overscroll / Chrome Pull-to-Refresh: Lock down html and body */
+  /* 2. Prevent Overscroll / Chrome Pull-to-Refresh & Viewport Height: Lock down html, body, and #root */
   html,
-  body {
+  body,
+  #root {
     overscroll-behavior-y: none;
     overscroll-behavior-x: none;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
+    width: 100%;
+    height: 100dvh;
+    min-height: 100dvh;
+    max-height: 100dvh;
+  }
+
+  html,
+  body {
     overflow-x: hidden;
     position: fixed;
-    width: 100%;
-    height: 100%;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+  }
+
+  #root {
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    display: flex;
+    flex-direction: column;
   }
 
   body {

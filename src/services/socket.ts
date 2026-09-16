@@ -484,6 +484,14 @@ class SocketService {
     }
   }
 
+  /**
+   * Dispatches a local event directly to subscribers, allowing deterministic
+   * test harness simulation and diagnostic events without network round-trips.
+   */
+  public emitLocal(event: string, data?: any) {
+    this.dispatch(event, data);
+  }
+
   private dispatch(event: string, data: any) {
     const wildcardSet = this.listeners.get('*');
     if (wildcardSet) {

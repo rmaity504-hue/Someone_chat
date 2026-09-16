@@ -78,6 +78,8 @@ interface AuthContextType {
   clearNotification: () => void;
   matchWithCompanion: () => Promise<boolean>;
   simulateCompanionAction: (action: 'violation' | 'clean_chat') => Promise<boolean>;
+  simulateMockSession: (topics?: string[]) => void;
+  simulatePartnerExit: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -945,6 +947,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return false;
   };
 
+  const simulateMockSession = (topics?: string[]) => {
+    triggerGentleHaptic(15);
+    const mockSession: ActiveSession = {
+      roomId: 'mock-session-' + Date.now().toString(36),
+      partnerId: 'mock-companion-user',
+      partnerDisplayName: 'A Quiet Companion',
+      isSimulator: true,
+      matchedTopics: topics && topics.length > 0 ? topics : ['Quiet Presence', 'Late Night Thoughts'],
+    };
+    setActiveSession(mockSession);
+    setMatchingState({ state: 'idle' });
+    setSessionClosureActive(false);
+    setMessages([
+      {
+        id: 'mock-msg-' + Date.now().toString(36),
+        senderId: 'mock-companion-user',
+        text: 'Hello. It is quiet here tonight. Glad to share this moment with you.',
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+  };
+
+  const simulatePartnerExit = () => {
+    if (activeSession) {
+      socketService.emitLocal('partner_disconnected', {
+        roomId: activeSession.roomId,
+        reason: 'The other person has stepped away.',
+      });
+    } else {
+      setSessionClosureActive(true);
+    }
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -996,6 +1031,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         clearNotification,
         matchWithCompanion,
         simulateCompanionAction,
+        simulateMockSession,
+        simulatePartnerExit,
       }}
     >
       {children}

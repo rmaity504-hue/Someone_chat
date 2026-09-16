@@ -18,6 +18,8 @@ import { AboutPhilosophyModal } from './components/AboutPhilosophyModal.js';
 import { ContactAdminModal } from './components/ContactAdminModal.js';
 import { InstallGuideModal } from './components/InstallGuideModal.js';
 import { SessionClosureCard } from './components/SessionClosureCard.js';
+import { PrivacyPolicyView } from './components/PrivacyPolicyView.js';
+import { DiagnosticPanel } from './components/DiagnosticPanel.js';
 import { InstallProvider, useInstall } from './context/InstallContext.js';
 import { AlertOctagon, AlertCircle, X, MessageSquare, Info } from 'lucide-react';
 
@@ -46,6 +48,20 @@ function MainApp() {
   const [aboutInitialTab, setAboutInitialTab] = useState<'philosophy' | 'retention' | 'safety'>('philosophy');
   const [contactAdminOpen, setContactAdminOpen] = useState(false);
   const [pendingTopics, setPendingTopics] = useState<string[]>([]);
+  const [currentPath, setCurrentPath] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return window.location.pathname;
+    }
+    return '/';
+  });
+
+  useEffect(() => {
+    const handleLocationChange = () => {
+      setCurrentPath(window.location.pathname);
+    };
+    window.addEventListener('popstate', handleLocationChange);
+    return () => window.removeEventListener('popstate', handleLocationChange);
+  }, []);
 
   // 4. Disable right-click / context menu globally across native shell (allow only inside editable text inputs/textareas)
   useEffect(() => {
@@ -79,6 +95,25 @@ function MainApp() {
 
   const isRestrictedOrSuspended =
     user && (user.status === 'restricted' || user.status === 'suspended' || user.status === 'banned');
+
+  if (currentPath === '/privacy') {
+    return (
+      <>
+        <PrivacyPolicyView
+          onBackToHome={() => {
+            window.history.pushState(null, '', '/');
+            setCurrentPath('/');
+          }}
+        />
+        <DiagnosticPanel
+          onOpenPrivacy={() => {
+            window.history.pushState(null, '', '/privacy');
+            setCurrentPath('/privacy');
+          }}
+        />
+      </>
+    );
+  }
 
   return (
     <div className={`${activeSession ? 'h-[100dvh] max-h-[100dvh] sm:h-auto sm:min-h-screen overflow-hidden sm:overflow-visible' : 'min-h-screen'} text-[#2D2723] flex flex-col font-sans selection:bg-[#C86D51]/20 selection:text-[#2D2723]`}>
@@ -170,6 +205,16 @@ function MainApp() {
                 className="hover:text-[#2D2723] underline underline-offset-4 decoration-[#E7E0D8] transition-colors cursor-pointer"
               >
                 Zero-Retention Policy
+              </button>
+              <button
+                id="footer-privacy-btn"
+                onClick={() => {
+                  window.history.pushState(null, '', '/privacy');
+                  setCurrentPath('/privacy');
+                }}
+                className="hover:text-[#2D2723] underline underline-offset-4 decoration-[#E7E0D8] transition-colors cursor-pointer"
+              >
+                Privacy Policy
               </button>
               <button
                 id="footer-contact-admin-btn"
@@ -283,6 +328,14 @@ function MainApp() {
           </button>
         </aside>
       )}
+
+      {/* Interactive Diagnostics & Functional Integrity Overlay */}
+      <DiagnosticPanel
+        onOpenPrivacy={() => {
+          window.history.pushState(null, '', '/privacy');
+          setCurrentPath('/privacy');
+        }}
+      />
     </div>
   );
 }
