@@ -6,6 +6,7 @@ import {
   sendDiagnosticTestEmail,
 } from './email.js';
 import { REQUIRE_EMAIL_VERIFICATION } from './config.js';
+import { sentimentTracker } from './sentimentMetrics.js';
 
 export const apiRouter = express.Router();
 
@@ -71,14 +72,14 @@ const resetPasswordLimiter = rateLimit({
   message: { error: 'Too many reset attempts. Please wait 15 minutes before trying again.' },
 });
 
-// 4. Matching queue limiter: max 15 requests per minute per IP
+// 4. Matching queue limiter: max 10 requests per minute per IP
 const matchingLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 15,
+  max: 10,
   standardHeaders: true,
   legacyHeaders: false,
   validate: false,
-  message: { error: 'Matching queue requests are too frequent. Please wait a moment.' },
+  message: { error: 'Matching queue requests are too frequent (max 10 per minute). Please wait a moment.' },
 });
 
 // 5. Reporting limiter: max 5 reports per 15 minutes per IP
@@ -121,17 +122,35 @@ const volunteerLimiter = rateLimit({
   message: { error: 'Too many volunteer actions. Please wait a moment.' },
 });
 
+// 9. Anonymous sentiment feedback limiter: max 30 submissions per minute per IP
+const sentimentLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: false,
+  message: { error: 'Too many sentiment feedback submissions. Please wait a moment.' },
+});
+
 // ----------------------------------------------------
 // AUTHENTICATION & AUTHORIZATION MIDDLEWARES
 // ----------------------------------------------------
 
 export function authenticate(req: Request, res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  let token: string | undefined;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice(7);
+  } else if (typeof req.body?.token === 'string') {
+    token = req.body.token;
+  } else if (typeof req.query?.token === 'string') {
+    token = req.query.token as string;
+  }
+
+  if (!token) {
     res.status(401).json({ error: 'Authentication required' });
     return;
   }
-  const token = authHeader.slice(7);
   const userId = db.getUserIdByToken(token);
   if (!userId) {
     res.status(401).json({ error: 'Invalid, revoked, or expired session. Please sign in again.' });
@@ -628,45 +647,50 @@ apiRouter.post(['/post-chat/choice', '/friendship/choice'], friendshipLimiter, a
 // SAFETY, REPORTING & BLOCKING
 // ----------------------------------------------------
 
-apiRouter.post(['/safety/report', '/report'], reportLimiter, authenticate, (req: Request, res: Response): void => {
+apiRouter.post(['/safety/report', '/report', '/reports'], reportLimiter, authenticate, (req: Request, res: Response): void => {
   const user = (req as any).user;
   const { reportedUserId, category, details, roomId, evidenceSnippet } = req.body;
 
-  if (!reportedUserId || !category || !details) {
-    res.status(400).json({ error: 'Reported user ID, category, and details are required.' });
+  if (!reportedUserId || !category) {
+    res.status(400).json({ error: 'Reported user ID and category are required.' });
     return;
   }
+
+  const reportDetails = typeof details === 'string' && details.trim().length > 0 ? details.trim() : `Reported for ${category}`;
 
   const report = db.createReport(
     user.id,
     reportedUserId,
     category,
-    details.trim(),
+    reportDetails,
     roomId,
     evidenceSnippet
   );
 
-  // Record in moderation review flags
+  // Increment internal flag counter in moderation review flags without recording chat logs
   const reportedUser = db.getUserById(reportedUserId);
   db.addFlag({
     userId: reportedUserId,
     displayName: reportedUser ? reportedUser.displayName : 'Unknown',
     roomId,
     triggerCategory: category,
-    flaggedText: `User Report (${category}): ${details.trim()}` + (evidenceSnippet ? ` [Evidence: ${evidenceSnippet}]` : ''),
+    flaggedText: `User Report (${category}): ${reportDetails}` + (evidenceSnippet ? ` [Evidence: ${evidenceSnippet}]` : ''),
     severity: 'high',
   });
 
-  // Auto-block the reported user immediately
+  // Auto-block the reported user immediately (mutual block)
   db.blockUser(user.id, reportedUserId);
-  matchmaker.handleUserDisconnect(user.id);
+  db.blockUser(reportedUserId, user.id);
+
+  // Immediately terminate the session for both parties with a respectful message
+  matchmaker.terminateWithMutualBlock(user.id, reportedUserId, roomId);
 
   res.json({ success: true, reportId: report.id });
 });
 
 apiRouter.post('/safety/block', authenticate, (req: Request, res: Response): void => {
   const user = (req as any).user;
-  const { targetUserId } = req.body;
+  const { targetUserId, roomId } = req.body;
 
   if (!targetUserId) {
     res.status(400).json({ error: 'Target user ID is required.' });
@@ -674,7 +698,8 @@ apiRouter.post('/safety/block', authenticate, (req: Request, res: Response): voi
   }
 
   db.blockUser(user.id, targetUserId);
-  matchmaker.handleUserDisconnect(user.id);
+  db.blockUser(targetUserId, user.id);
+  matchmaker.terminateWithMutualBlock(user.id, targetUserId, roomId);
 
   res.json({ success: true });
 });
@@ -1085,5 +1110,24 @@ apiRouter.post('/simulator/action', authenticate, (req: Request, res: Response):
   }
 
   res.json({ success: true });
+});
+
+// ----------------------------------------------------
+// ANONYMOUS HEALTH CHECK & SESSION SENTIMENT METRICS
+// ----------------------------------------------------
+apiRouter.post('/metrics/sentiment', sentimentLimiter, (req: Request, res: Response): void => {
+  const { rating } = req.body;
+  const recorded = sentimentTracker.recordRating(rating);
+
+  if (!recorded) {
+    res.status(400).json({ error: 'Valid rating ("peaceful", "neutral", or "disruptive") is required.' });
+    return;
+  }
+
+  res.json({ success: true, message: 'Sentiment recorded anonymously.' });
+});
+
+apiRouter.get('/metrics/sentiment', (req: Request, res: Response): void => {
+  res.json({ success: true, metrics: sentimentTracker.getStats() });
 });
 

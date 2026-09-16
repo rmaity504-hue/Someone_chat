@@ -41,6 +41,13 @@ class SocketService {
   private activeSessionId: string | null = null;
   private activeUserId: string | null = null;
 
+  // Cold-start grace period: give Render free container 30s quiet connection timeout
+  // before marking connection as failed ('offline'), avoiding false-alarm banners on app launch
+  private firstConnectAttemptTime: number | null = null;
+  private hasConnectedOnce = false;
+  private readonly coldStartGracePeriodMs = 30000; // 30-second quiet connection timeout
+  private coldStartTimeoutTimer: any = null;
+
   private listeners: Map<string, Set<SocketEventHandler>> = new Map();
   private statusListeners: Set<StatusChangeHandler> = new Set();
   private pendingQueue: Array<{ event: string; data?: any }> = [];
@@ -52,6 +59,16 @@ class SocketService {
         if (storedToken && (this.status === 'disconnected' || this.status === 'offline' || this.status === 'reconnecting')) {
           console.log('[WebSocket] Network back online, resuming connection...');
           this.retryNow();
+        }
+      });
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          const storedToken = this.token || localStorage.getItem('someone_token');
+          if (storedToken && !this.isConnected() && !this.intentionalClose) {
+            console.log('[WebSocket] App foregrounded, quietly verifying connection...');
+            this.retryNow();
+          }
         }
       });
     }
@@ -111,6 +128,29 @@ class SocketService {
   public connect(token: string, isRetry = false) {
     if (!token) return;
 
+    // Track first connect attempt timestamp for Render cold-start 30-second grace period
+    if (!this.hasConnectedOnce && this.firstConnectAttemptTime === null) {
+      this.firstConnectAttemptTime = Date.now();
+    }
+
+    // Initialize 30-second cold-start timer if not already running
+    if (!this.hasConnectedOnce && !this.coldStartTimeoutTimer) {
+      this.coldStartTimeoutTimer = setTimeout(() => {
+        this.coldStartTimeoutTimer = null;
+        // If 30 seconds have passed, still never connected, and attempts exhausted, transition to offline
+        if (!this.hasConnectedOnce && !this.isConnected() && !this.intentionalClose) {
+          console.log('[WebSocket] 30s cold-start quiet connection period expired.');
+          if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            this.setStatus('offline');
+            this.dispatch('connection:offline', {
+              attempts: this.reconnectAttempts,
+              maxAttempts: this.maxReconnectAttempts,
+            });
+          }
+        }
+      }, this.coldStartGracePeriodMs);
+    }
+
     // If already connected or connecting with identical token and not a forced retry, keep existing connection
     if (!isRetry && this.token === token && this.ws) {
       if (this.ws.readyState === WebSocket.OPEN) {
@@ -140,7 +180,13 @@ class SocketService {
 
       socket.onopen = () => {
         if (this.ws !== socket) return;
+        this.hasConnectedOnce = true;
+        this.firstConnectAttemptTime = null;
         this.reconnectAttempts = 0;
+        if (this.coldStartTimeoutTimer) {
+          clearTimeout(this.coldStartTimeoutTimer);
+          this.coldStartTimeoutTimer = null;
+        }
         this.setStatus('connected');
         console.log('[WebSocket] Connected securely to server.');
 
@@ -208,7 +254,19 @@ class SocketService {
           return;
         }
 
-        this.setStatus('reconnecting');
+        const now = Date.now();
+        const isInColdStart =
+          !this.hasConnectedOnce &&
+          this.firstConnectAttemptTime !== null &&
+          now - this.firstConnectAttemptTime < this.coldStartGracePeriodMs;
+
+        // Keep status as 'connecting' during cold-start so home screen & queue avoid false alarm alerts
+        if (isInColdStart) {
+          this.setStatus('connecting');
+        } else {
+          this.setStatus('reconnecting');
+        }
+
         this.scheduleReconnect();
       };
 
@@ -248,14 +306,53 @@ class SocketService {
       this.reconnectTimer = null;
     }
 
-    // Maximum reconnect attempts: 5 attempts before notifying user of offline state
+    const now = Date.now();
+    const isInColdStart =
+      !this.hasConnectedOnce &&
+      this.firstConnectAttemptTime !== null &&
+      now - this.firstConnectAttemptTime < this.coldStartGracePeriodMs;
+
+    // 2. RENDER COLD-START GRACE PERIOD:
+    // During the 30-second quiet connection timeout on app open, do NOT mark connection as failed ('offline').
+    // Render free tier instances take ~15-25s to spin up. Continue quiet retries every ~2.5s.
+    if (isInColdStart) {
+      this.reconnectAttempts += 1;
+      this.setStatus('connecting');
+
+      const elapsedSec = Math.round((now - this.firstConnectAttemptTime!) / 1000);
+      const delay = Math.min(2000 + Math.floor(Math.random() * 800), 3200);
+      console.log(
+        `[WebSocket] Cold-start quiet retry in ${(delay / 1000).toFixed(1)}s (elapsed ${elapsedSec}s / 30s grace period)...`
+      );
+
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        if (!this.intentionalClose && this.token) {
+          this.connect(this.token, true);
+        }
+      }, delay);
+      return;
+    }
+
+    // Maximum reconnect attempts: 5 attempts before marking as offline
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.warn(`[WebSocket] Reconnect attempts exhausted (${this.reconnectAttempts}/${this.maxReconnectAttempts}). Entering offline state.`);
+      console.warn(
+        `[WebSocket] Reconnect attempts exhausted (${this.reconnectAttempts}/${this.maxReconnectAttempts}). Entering offline state.`
+      );
       this.setStatus('offline');
       this.dispatch('connection:offline', {
         attempts: this.reconnectAttempts,
         maxAttempts: this.maxReconnectAttempts,
       });
+
+      // Background quiet retry every 20s so connection recovers silently once server or network wakes up
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        if (!this.intentionalClose && this.token && !this.isConnected()) {
+          console.log('[WebSocket] Background quiet retry while offline...');
+          this.connect(this.token, true);
+        }
+      }, 20000);
       return;
     }
 
@@ -267,7 +364,9 @@ class SocketService {
 
     this.reconnectAttempts += 1;
     this.setStatus('reconnecting');
-    console.log(`[WebSocket] Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+    console.log(
+      `[WebSocket] Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`
+    );
 
     this.dispatch('connection:reconnecting', {
       attempt: this.reconnectAttempts,
@@ -287,9 +386,13 @@ class SocketService {
     this.cancelReconnect();
     this.reconnectAttempts = 0;
     this.intentionalClose = false;
+    // Reset cold-start attempt timer if never connected
+    if (!this.hasConnectedOnce) {
+      this.firstConnectAttemptTime = Date.now();
+    }
     const activeToken = this.token || (typeof localStorage !== 'undefined' ? localStorage.getItem('someone_token') : null);
     if (activeToken) {
-      this.setStatus('reconnecting');
+      this.setStatus('connecting');
       this.connect(activeToken, true);
     }
   }
@@ -307,6 +410,11 @@ class SocketService {
     this.reconnectAttempts = 0;
     this.activeSessionId = null;
     this.activeUserId = null;
+    this.firstConnectAttemptTime = null;
+    if (this.coldStartTimeoutTimer) {
+      clearTimeout(this.coldStartTimeoutTimer);
+      this.coldStartTimeoutTimer = null;
+    }
     this.cancelReconnect();
     this.cleanupSocket(true, reason);
     this.setStatus('disconnected');
@@ -345,8 +453,8 @@ class SocketService {
       }
     }
 
-    // Queue if currently connecting so messages are not lost during handshake
-    if (this.status === 'connecting') {
+    // Queue if currently connecting or reconnecting so messages are not lost during handshake
+    if (this.status === 'connecting' || this.status === 'reconnecting') {
       if (this.pendingQueue.length < 25) {
         this.pendingQueue.push({ event, data });
       }

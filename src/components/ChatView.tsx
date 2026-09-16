@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext.js';
 import {
   Send,
@@ -16,13 +16,18 @@ import {
   BellOff,
   SkipForward,
   Wind,
+  ArrowLeft,
 } from 'lucide-react';
 import { ReportModal } from './ReportModal.js';
 import { IcebreakerModal } from './IcebreakerModal.js';
 import { CrisisSupportModal } from './CrisisSupportModal.js';
-import { useSoundMute } from '../utils/feedback.js';
-import { filterChatMessage } from '../utils/privacyFilter.js';
-import { checkCrisisKeywords } from '../utils/safetyInterceptor.js';
+import { ConnectionStatusBar } from './ConnectionStatusBar.js';
+import { SessionClosureCard } from './SessionClosureCard.js';
+import { useChatSession } from '../hooks/useChatSession.js';
+import { socketService } from '../services/socket.js';
+import { useSoundMute, playDisconnectSound, triggerGentleHaptic } from '../utils/feedback.js';
+import { filterChatMessage, detectContactOrLinks, sanitizeChatMessage, MAX_MESSAGE_LENGTH } from '../utils/privacyFilter.js';
+import { detectCrisisIntent, checkCrisisKeywords } from '../utils/safetyInterceptor.js';
 
 const GENTLE_PUSH_PROMPTS = [
   "What's a thought you haven't said out loud today?",
@@ -39,6 +44,8 @@ export const ChatView: React.FC = () => {
     isPartnerTyping,
     sendMessage,
     disconnectChat,
+    returnToQuietCorner,
+    lookForSomeoneNew,
     quickEmergencyExit,
     skipToNext,
     sendTyping,
@@ -55,14 +62,25 @@ export const ChatView: React.FC = () => {
 
   const { isMuted, toggleMute } = useSoundMute();
 
-  const [input, setInput] = useState('');
+  const {
+    inputText: input,
+    setInputText: setInput,
+    purgeSessionMemory,
+    leaveChat,
+  } = useChatSession();
+
   const [showReport, setShowReport] = useState(false);
   const [showIcebreakers, setShowIcebreakers] = useState(false);
   const [showCrisisModal, setShowCrisisModal] = useState(false);
   const [pendingCrisisMessage, setPendingCrisisMessage] = useState<string | null>(null);
   const [confirmBlock, setConfirmBlock] = useState(false);
+  const [confirmBackExit, setConfirmBackExit] = useState(false);
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
+  const [voluntaryEnded, setVoluntaryEnded] = useState(false);
   const [reminderDismissed, setReminderDismissed] = useState(false);
   const [simulatingAction, setSimulatingAction] = useState<string | null>(null);
+
+  const isSessionEnded = Boolean(activeSession?.hasEnded || voluntaryEnded);
 
   // Gentle Pushes & Privacy Shield states
   const [gentlePushIndex, setGentlePushIndex] = useState<number>(0);
@@ -71,6 +89,17 @@ export const ChatView: React.FC = () => {
   const privacyToastTimerRef = useRef<any>(null);
   const lastMessageTimestampRef = useRef<number>(Date.now());
 
+  // Client-side rate limiting (800ms minimum, >5 messages in 3s triggers 5s cooldown)
+  const [isRateLimited, setIsRateLimited] = useState<boolean>(false);
+  const [rateLimitNotice, setRateLimitNotice] = useState<string | null>(null);
+  const lastSendTimeRef = useRef<number>(0);
+  const sendTimestampsRef = useRef<number[]>([]);
+  const rateLimitTimerRef = useRef<any>(null);
+
+  // PII & Contact exchanging filter states
+  const [showPiiAlert, setShowPiiAlert] = useState<boolean>(false);
+  const [pendingPiiMessage, setPendingPiiMessage] = useState<string | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const isLocalTypingRef = useRef<boolean>(false);
@@ -78,12 +107,19 @@ export const ChatView: React.FC = () => {
   const typingInactivityTimerRef = useRef<any>(null);
 
   const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
-    messagesEndRef.current?.scrollIntoView({ behavior });
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior, block: 'end' });
+    }
   };
 
+  // Auto-scroll smoothly to the latest message whenever a new message arrives or partner types
   useEffect(() => {
     scrollToBottom('smooth');
-  }, [messages, isPartnerTyping]);
+    const timer = setTimeout(() => {
+      scrollToBottom('smooth');
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [messages.length, isPartnerTyping]);
 
   // Track conversation flow: update timestamp on messages and advance prompts
   useEffect(() => {
@@ -115,17 +151,17 @@ export const ChatView: React.FC = () => {
     }
   }, [input, isPartnerTyping]);
 
-  // Mobile Visual Viewport API: lock viewport height and securely dock input bar
+  // Mobile Visual Viewport API: lock viewport height using 100dvh so input bar stays visible directly above keyboard
   useEffect(() => {
     const updateViewport = () => {
       if (window.visualViewport) {
         const vh = window.visualViewport.height;
         document.documentElement.style.setProperty('--viewport-height', `${vh}px`);
       } else {
-        document.documentElement.style.setProperty('--viewport-height', `${window.innerHeight}px`);
+        document.documentElement.style.setProperty('--viewport-height', '100dvh');
       }
-      // Scroll to latest message whenever keyboard opens or viewport shifts
-      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      // Auto-scroll smoothly to latest message whenever keyboard opens or viewport shifts
+      scrollToBottom('smooth');
     };
 
     updateViewport();
@@ -146,6 +182,27 @@ export const ChatView: React.FC = () => {
     }
   }, []);
 
+  // Android Hardware Back-Button & Swipe Gesture Interceptor
+  // Pushes a dedicated history entry while in active chat so popstate intercepts accidental departures
+  useEffect(() => {
+    if (!activeSession) return;
+
+    // Push a sentinel state so Android hardware back or swipe triggers a popstate event first
+    window.history.pushState({ inChatSession: true, roomId: activeSession.roomId }, '');
+
+    const handlePopState = (event: PopStateEvent) => {
+      // Re-push sentinel state immediately to trap and prevent uncontrolled browser back exit
+      window.history.pushState({ inChatSession: true, roomId: activeSession.roomId }, '');
+      setConfirmBackExit(true);
+    };
+
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [activeSession?.roomId]);
+
   const stopTyping = () => {
     if (typingDebounceTimerRef.current) {
       clearTimeout(typingDebounceTimerRef.current);
@@ -161,10 +218,12 @@ export const ChatView: React.FC = () => {
     }
   };
 
-  // Cleanup typing timers on unmount
+  // Cleanup typing and rate limit timers on unmount
   useEffect(() => {
     return () => {
       stopTyping();
+      if (rateLimitTimerRef.current) clearTimeout(rateLimitTimerRef.current);
+      if (privacyToastTimerRef.current) clearTimeout(privacyToastTimerRef.current);
     };
   }, []);
 
@@ -180,6 +239,17 @@ export const ChatView: React.FC = () => {
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setInput(val);
+
+    // If PII alert is showing, check if contact/links were removed
+    if (showPiiAlert) {
+      const check = detectContactOrLinks(val);
+      if (!check.hasContactOrLink) {
+        setShowPiiAlert(false);
+        setPendingPiiMessage(null);
+      } else {
+        setPendingPiiMessage(val);
+      }
+    }
 
     if (val.trim()) {
       // Clear pending inactivity timer while actively typing
@@ -212,50 +282,149 @@ export const ChatView: React.FC = () => {
     inputEl?.focus();
   };
 
-  const handleSend = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim()) return;
+  // Client-Side Rate Limiter:
+  // - Disallows sending > 1 message every 800ms
+  // - If user sends > 5 messages within 3 seconds, disables send button for 5s with calm notice
+  const checkRateLimit = (): boolean => {
+    if (isRateLimited) return false;
 
-    // Automatic Client-side Privacy & Data Filter
-    const filterResult = filterChatMessage(input);
-    if (!filterResult.allowed) {
-      setPrivacyToast(filterResult.reason || 'Links are kept out to maintain a quiet sanctuary.');
-      if (privacyToastTimerRef.current) clearTimeout(privacyToastTimerRef.current);
-      privacyToastTimerRef.current = setTimeout(() => {
-        setPrivacyToast(null);
-      }, 4500);
-      return; // Prevent transmission until link is removed
+    const now = Date.now();
+    // Prune timestamps older than 3 seconds
+    sendTimestampsRef.current = sendTimestampsRef.current.filter((t) => now - t < 3000);
+
+    // 1. Spacing threshold: at least 800ms between sends
+    if (now - lastSendTimeRef.current < 800) {
+      sendTimestampsRef.current.push(now);
+
+      if (sendTimestampsRef.current.length > 5) {
+        setIsRateLimited(true);
+        setRateLimitNotice('Take a breath. Please slow down.');
+        if (rateLimitTimerRef.current) clearTimeout(rateLimitTimerRef.current);
+        rateLimitTimerRef.current = setTimeout(() => {
+          setIsRateLimited(false);
+          setRateLimitNotice(null);
+        }, 5000);
+      } else {
+        setRateLimitNotice('Take a breath. Please slow down.');
+        if (rateLimitTimerRef.current) clearTimeout(rateLimitTimerRef.current);
+        rateLimitTimerRef.current = setTimeout(() => {
+          setRateLimitNotice(null);
+        }, 1200);
+      }
+      return false;
     }
 
-    setPrivacyToast(null);
+    // 2. Burst threshold: max 5 messages in 3 seconds
+    if (sendTimestampsRef.current.length >= 5) {
+      setIsRateLimited(true);
+      setRateLimitNotice('Take a breath. Please slow down.');
+      if (rateLimitTimerRef.current) clearTimeout(rateLimitTimerRef.current);
+      rateLimitTimerRef.current = setTimeout(() => {
+        setIsRateLimited(false);
+        setRateLimitNotice(null);
+      }, 5000);
+      return false;
+    }
 
-    // Discreet Client-Side Crisis Interceptor (Zero-Logging)
-    if (checkCrisisKeywords(filterResult.sanitizedText)) {
-      setPendingCrisisMessage(filterResult.sanitizedText);
+    return true;
+  };
+
+  const recordSuccessfulSend = () => {
+    const now = Date.now();
+    lastSendTimeRef.current = now;
+    sendTimestampsRef.current = sendTimestampsRef.current.filter((t) => now - t < 3000);
+    sendTimestampsRef.current.push(now);
+
+    if (sendTimestampsRef.current.length > 5) {
+      setIsRateLimited(true);
+      setRateLimitNotice('Take a breath. Please slow down.');
+      if (rateLimitTimerRef.current) clearTimeout(rateLimitTimerRef.current);
+      rateLimitTimerRef.current = setTimeout(() => {
+        setIsRateLimited(false);
+        setRateLimitNotice(null);
+      }, 5000);
+    }
+  };
+
+  const dispatchFinalMessage = (textToSend: string) => {
+    // Discreet, empathetic client-side crisis intent interceptor (zero-logging in local memory)
+    if (detectCrisisIntent(textToSend)) {
+      setPendingCrisisMessage(textToSend);
       setShowCrisisModal(true);
       return;
     }
 
-    // Immediately stop emitting typing upon sending a message
+    recordSuccessfulSend();
     stopTyping();
-
-    // Send the sanitized message (phone numbers masked)
-    sendMessage(filterResult.sanitizedText);
+    sendMessage(textToSend);
     setInput('');
+    setShowPiiAlert(false);
+    setPendingPiiMessage(null);
+  };
+
+  const handleSend = (e: React.FormEvent) => {
+    e.preventDefault();
+    navigator.vibrate?.(10);
+    if (!input.trim() || isSessionEnded || isRateLimited) return;
+
+    if (!checkRateLimit()) return;
+
+    const sanitized = sanitizeChatMessage(input);
+    if (!sanitized) return;
+
+    // PII & Contact Exchanging Filter (Optional Safety Layer):
+    // Detect phone numbers, raw links (http/https/t.me), and social handles (@username)
+    const contactCheck = detectContactOrLinks(sanitized);
+    if (contactCheck.hasContactOrLink) {
+      setShowPiiAlert(true);
+      setPendingPiiMessage(sanitized);
+      return;
+    }
+
+    dispatchFinalMessage(sanitized);
+  };
+
+  const handleConfirmSendAnyway = () => {
+    navigator.vibrate?.(10);
+    if (!pendingPiiMessage || isSessionEnded || isRateLimited) return;
+    if (!checkRateLimit()) return;
+
+    const textToSend = pendingPiiMessage;
+    setShowPiiAlert(false);
+    setPendingPiiMessage(null);
+    dispatchFinalMessage(textToSend);
+  };
+
+  const handleEditPiiMessage = () => {
+    setShowPiiAlert(false);
+    setPendingPiiMessage(null);
+    const inputEl = document.getElementById('chat-input') as HTMLInputElement | null;
+    inputEl?.focus();
   };
 
   const handleContinueAfterCrisis = () => {
     setShowCrisisModal(false);
-    if (pendingCrisisMessage) {
+    const messageToSend = pendingCrisisMessage || input.trim();
+    if (messageToSend) {
+      recordSuccessfulSend();
       stopTyping();
-      sendMessage(pendingCrisisMessage);
+      sendMessage(messageToSend);
       setPendingCrisisMessage(null);
       setInput('');
+      setShowPiiAlert(false);
+      setPendingPiiMessage(null);
     }
+  };
+
+  const handleClearAndCloseCrisisModal = () => {
+    setShowCrisisModal(false);
+    setPendingCrisisMessage(null);
+    setInput('');
   };
 
   const handleDismissCrisisModal = () => {
     setShowCrisisModal(false);
+    // Keep typed text intact in input
     setPendingCrisisMessage(null);
   };
 
@@ -376,15 +545,15 @@ export const ChatView: React.FC = () => {
             <span className="hidden sm:inline">Next</span>
           </button>
 
-          {/* Disconnect Button */}
+          {/* Leave Chat / End Conversation Button */}
           <button
             id="chat-disconnect-btn"
-            onClick={disconnectChat}
+            onClick={() => setShowLeaveConfirm(true)}
             className="flex items-center gap-1.5 ml-0.5 px-3 py-1.5 bg-[#F5F2EB] hover:bg-[#EDE6DC] text-[#5C534D] hover:text-[#2D2723] text-xs font-medium rounded-full border border-[#E7E0D8] transition-all cursor-pointer shadow-2xs"
             title="Leave this conversation"
           >
             <LogOut className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Disconnect</span>
+            <span className="hidden sm:inline">Leave Chat</span>
           </button>
         </div>
       </div>
@@ -403,47 +572,8 @@ export const ChatView: React.FC = () => {
         </div>
       )}
 
-      {/* Local Client Reconnection Banner */}
-      {connectionStatus === 'reconnecting' && (
-        <div
-          role="status"
-          className="px-4 py-2 bg-[#FAF3EB] border-b border-[#EADFCB] flex items-center justify-between text-xs text-[#825C26] animate-fade-in"
-        >
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-amber-500 animate-ping shrink-0" />
-            <span>
-              Reconnecting to sanctuary... (Attempt {reconnectAttempts} of {maxReconnectAttempts})
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={retryConnection}
-            className="underline font-medium hover:text-[#523A16] cursor-pointer"
-          >
-            Retry now
-          </button>
-        </div>
-      )}
-
-      {/* Local Client Offline Banner */}
-      {connectionStatus === 'offline' && (
-        <div
-          role="status"
-          className="px-4 py-2 bg-[#FBEBE8] border-b border-[#F0CEC6] flex items-center justify-between text-xs text-[#A84332] animate-fade-in"
-        >
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-[#A84332] shrink-0" />
-            <span>Connection lost. Mobile network or Wi-Fi dropped.</span>
-          </div>
-          <button
-            type="button"
-            onClick={retryConnection}
-            className="px-2 py-0.5 bg-[#A84332] text-white rounded text-[11px] font-medium hover:bg-[#8D3425] cursor-pointer"
-          >
-            Reconnect
-          </button>
-        </div>
-      )}
+      {/* Reconnect / Connection Status Banner - Restricted to Active Chat View only */}
+      <ConnectionStatusBar />
 
       {/* Test Companion Simulator Toolbar (Development / Admin / Companion sessions) */}
       {showSimulatorTools && (
@@ -633,6 +763,56 @@ export const ChatView: React.FC = () => {
         </div>
       )}
 
+      {/* Client-Side Rate Limit Notice */}
+      {rateLimitNotice && (
+        <div
+          id="chat-rate-limit-notice"
+          className="mx-3 my-1.5 px-3.5 py-2 bg-[#FAF0EB] border border-[#E8C7BC] text-[#C86D51] text-xs rounded-xl flex items-center justify-center gap-2 animate-in fade-in slide-in-from-bottom-1 duration-200 shadow-2xs"
+          role="status"
+          aria-live="polite"
+        >
+          <Wind className="w-3.5 h-3.5 shrink-0 animate-pulse" />
+          <span className="font-medium">{rateLimitNotice}</span>
+        </div>
+      )}
+
+      {/* Discreet Inline PII & Contact Exchanging Alert */}
+      {showPiiAlert && (
+        <div
+          id="chat-pii-alert"
+          role="alert"
+          className="mx-3 my-1.5 p-3 sm:p-3.5 bg-[#FAF3EB] border border-[#EADFCB] rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-[#5C534D] shadow-xs animate-in fade-in slide-in-from-bottom-1 duration-200"
+        >
+          <div className="flex items-start sm:items-center gap-2.5">
+            <div className="p-1.5 bg-[#FAF0EB] text-[#C86D51] rounded-lg shrink-0 mt-0.5 sm:mt-0">
+              <ShieldAlert className="w-4 h-4 text-[#C86D51]" />
+            </div>
+            <p className="leading-snug text-[#5C534D]">
+              For your safety and anonymity, sharing personal contacts or links is discouraged.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+            <button
+              type="button"
+              id="pii-edit-msg-btn"
+              onClick={handleEditPiiMessage}
+              className="px-3.5 py-1.5 text-xs font-medium text-[#5C534D] hover:text-[#2D2723] bg-[#F2ECE4] hover:bg-[#E7DFD3] rounded-full border border-[#E0D7CC] transition-colors cursor-pointer"
+            >
+              Edit message
+            </button>
+            <button
+              type="button"
+              id="pii-send-anyway-btn"
+              onClick={handleConfirmSendAnyway}
+              disabled={isRateLimited}
+              className="px-3.5 py-1.5 text-xs font-medium text-[#FAF8F5] bg-[#C86D51] hover:bg-[#B65E43] rounded-full shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
+            >
+              Send anyway
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Input Form */}
       <form
         onSubmit={handleSend}
@@ -642,36 +822,54 @@ export const ChatView: React.FC = () => {
         <button
           id="chat-icebreaker-btn"
           type="button"
+          disabled={isSessionEnded}
           onClick={() => setShowIcebreakers((prev) => !prev)}
-          className={`p-2.5 rounded-full border transition-all cursor-pointer shadow-2xs ${
+          className={`p-2.5 rounded-full border transition-all cursor-pointer shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed ${
             showIcebreakers
               ? 'bg-[#E8C7BC] text-[#C86D51] border-[#C86D51]'
               : 'bg-[#F5F2EB] text-[#8C827A] hover:text-[#C86D51] border-[#E7E0D8] hover:bg-[#FAF8F5]'
           }`}
-          title="Spark a thought (Icebreakers)"
+          title={isSessionEnded ? "Conversation ended" : "Spark a thought (Icebreakers)"}
           aria-label="Spark a thought"
         >
           <Sparkles className="w-4 h-4" />
         </button>
 
-        <input
-          id="chat-input"
-          type="text"
-          value={input}
-          onChange={handleInputChange}
-          onFocus={() => {
-            setTimeout(() => scrollToBottom('smooth'), 250);
-          }}
-          placeholder="Write a message..."
-          className="flex-1 px-4 py-2.5 bg-[#F5F2EB] border border-[#E7E0D8] rounded-full text-base sm:text-sm text-[#2D2723] placeholder:text-[#8C827A] focus:outline-none focus:ring-2 focus:ring-[#C86D51]/30 focus:border-[#C86D51]"
-          autoFocus
-        />
+        <div className="relative flex-1 flex items-center">
+          <input
+            id="chat-input"
+            type="text"
+            maxLength={MAX_MESSAGE_LENGTH}
+            value={input}
+            disabled={isSessionEnded}
+            onChange={handleInputChange}
+            onFocus={() => {
+              setTimeout(() => scrollToBottom('smooth'), 250);
+            }}
+            placeholder={isSessionEnded ? "The other person has stepped away." : "Write a message..."}
+            className="w-full px-4 py-2.5 bg-[#F5F2EB] border border-[#E7E0D8] rounded-full text-base sm:text-sm text-[#2D2723] placeholder:text-[#8C827A] focus:outline-none focus:ring-2 focus:ring-[#C86D51]/30 focus:border-[#C86D51] disabled:opacity-70 disabled:cursor-not-allowed disabled:bg-[#ECE6DE]"
+            autoFocus={!isSessionEnded}
+          />
+          {input.length > 400 && !isSessionEnded && (
+            <span
+              id="chat-char-counter"
+              className={`absolute right-3 text-[11px] font-mono px-1.5 py-0.5 rounded-md ${
+                input.length >= MAX_MESSAGE_LENGTH
+                  ? 'text-[#C86D51] font-semibold bg-[#FAF0EB]'
+                  : 'text-[#8C827A] bg-[#F5F2EB]'
+              }`}
+            >
+              {input.length}/{MAX_MESSAGE_LENGTH}
+            </span>
+          )}
+        </div>
         <button
           id="chat-send-btn"
           type="submit"
-          disabled={!input.trim()}
-          className="p-2.5 bg-[#C86D51] hover:bg-[#B65E43] text-[#FAF8F5] rounded-full disabled:opacity-40 transition-all cursor-pointer shadow-2xs"
-          title="Send"
+          onClick={() => navigator.vibrate?.(10)}
+          disabled={!input.trim() || isSessionEnded || isRateLimited}
+          className="p-2.5 bg-[#C86D51] hover:bg-[#B65E43] text-[#FAF8F5] rounded-full disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer shadow-2xs"
+          title={isRateLimited ? "Take a breath. Please slow down." : "Send"}
         >
           <Send className="w-4 h-4" />
         </button>
@@ -705,6 +903,7 @@ export const ChatView: React.FC = () => {
         isOpen={showCrisisModal}
         onClose={handleDismissCrisisModal}
         onContinueChat={handleContinueAfterCrisis}
+        onClearAndClose={handleClearAndCloseCrisisModal}
       />
 
       {/* Block Confirmation Dialog */}
@@ -736,6 +935,126 @@ export const ChatView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Voluntary User Exit Confirmation Dialog */}
+      {showLeaveConfirm && (
+        <div
+          id="leave-confirm-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="leave-modal-heading"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#2D2723]/40 backdrop-blur-xs spring-overlay-enter"
+        >
+          <div className="bg-[#FAF8F5] border border-[#E7E0D8] rounded-3xl max-w-sm w-full p-6 space-y-4 text-[#2D2723] shadow-xl spring-modal-enter">
+            <div className="flex items-center gap-2.5 text-[#C86D51]">
+              <div className="p-2 bg-[#FAF0EB] rounded-xl">
+                <LogOut className="w-4 h-4 text-[#C86D51]" />
+              </div>
+              <h3 id="leave-modal-heading" className="font-serif text-lg font-medium text-[#2D2723]">
+                Step away from this conversation?
+              </h3>
+            </div>
+            <p className="text-xs text-[#5C534D] leading-relaxed">
+              Leaving will close this private session. No messages are stored or archived.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                id="leave-modal-stay-btn"
+                onClick={() => setShowLeaveConfirm(false)}
+                className="px-4 py-2 text-xs text-[#5C534D] hover:text-[#2D2723] rounded-full transition-colors cursor-pointer"
+              >
+                Stay in Chat
+              </button>
+              <button
+                type="button"
+                id="leave-modal-confirm-btn"
+                onClick={() => {
+                  setShowLeaveConfirm(false);
+                  triggerGentleHaptic(15);
+                  playDisconnectSound();
+                  setVoluntaryEnded(true);
+                  if (activeSession) {
+                    socketService.send('leave_chat', { roomId: activeSession.roomId });
+                    socketService.send('chat:disconnect', { roomId: activeSession.roomId });
+                  }
+                  purgeSessionMemory();
+                }}
+                className="px-4 py-2 bg-[#C86D51] text-[#FAF8F5] text-xs font-medium rounded-full hover:bg-[#B65E43] transition-colors cursor-pointer shadow-2xs"
+              >
+                End Conversation
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Android Hardware Back-Button / Swipe Gesture Confirmation Dialog */}
+      {confirmBackExit && (
+        <div
+          id="back-exit-modal"
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#2D2723]/40 backdrop-blur-xs spring-overlay-enter"
+        >
+          <div className="bg-[#FAF8F5] border border-[#E7E0D8] rounded-3xl max-w-sm w-full p-6 space-y-4 text-[#2D2723] shadow-xl spring-modal-enter">
+            <div className="flex items-center gap-2.5 text-[#C86D51]">
+              <div className="p-2 bg-[#FAF0EB] rounded-xl">
+                <ArrowLeft className="w-4 h-4 text-[#C86D51]" />
+              </div>
+              <h3 className="font-serif text-lg font-medium text-[#2D2723]">
+                Step away from this conversation?
+              </h3>
+            </div>
+            <p className="text-xs text-[#5C534D] leading-relaxed">
+              Leaving will close this private session. No messages are stored or archived.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                id="back-exit-stay-btn"
+                onClick={() => setConfirmBackExit(false)}
+                className="px-4 py-2 text-xs text-[#5C534D] hover:text-[#2D2723] rounded-full transition-colors cursor-pointer"
+              >
+                Stay in Chat
+              </button>
+              <button
+                type="button"
+                id="back-exit-confirm-btn"
+                onClick={() => {
+                  setConfirmBackExit(false);
+                  triggerGentleHaptic(15);
+                  playDisconnectSound();
+                  setVoluntaryEnded(true);
+                  if (activeSession) {
+                    socketService.send('leave_chat', { roomId: activeSession.roomId });
+                    socketService.send('chat:disconnect', { roomId: activeSession.roomId });
+                  }
+                  purgeSessionMemory();
+                }}
+                className="px-4 py-2 bg-[#C86D51] text-[#FAF8F5] text-xs font-medium rounded-full hover:bg-[#B65E43] transition-colors cursor-pointer shadow-2xs"
+              >
+                End Conversation
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Ephemeral Session Closure Ritual Modal over the Chat Stream */}
+      <SessionClosureCard
+        isOpen={isSessionEnded}
+        onFindAnother={() => {
+          triggerGentleHaptic(15);
+          purgeSessionMemory();
+          lookForSomeoneNew(activeSession?.matchedTopics);
+        }}
+        onReturnHome={() => {
+          triggerGentleHaptic(15);
+          purgeSessionMemory();
+          returnToQuietCorner();
+        }}
+      />
     </div>
   );
 };

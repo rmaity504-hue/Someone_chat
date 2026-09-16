@@ -1,17 +1,71 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext.js';
-import { motion } from 'motion/react';
-import { Radio, HeartHandshake, UserX, Loader2, Bot } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { HeartHandshake, UserX, Loader2, Bot } from 'lucide-react';
+import { ConnectionStatusBar } from './ConnectionStatusBar.js';
+import { socketService } from '../services/socket.js';
 
 export interface MatchingViewProps {
   onCancel: () => void;
   topics?: string[];
+  onBroadenTopics?: () => void;
 }
 
-export const MatchingView: React.FC<MatchingViewProps> = ({ onCancel, topics }) => {
+const STATUS_LINES = [
+  'Looking across timezones...',
+  'Finding someone awake...',
+  'Presence takes time...',
+];
+
+export const MatchingView: React.FC<MatchingViewProps> = ({ onCancel, topics, onBroadenTopics }) => {
   const { user, matchingState, acceptMatch, enterMatching, leaveMatching, matchWithCompanion } = useAuth();
   const [connectingCompanion, setConnectingCompanion] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [statusIndex, setStatusIndex] = useState(0);
+  const [activeTopics, setActiveTopics] = useState<string[]>(topics || []);
+
+  useEffect(() => {
+    setActiveTopics(topics || []);
+  }, [topics]);
+
+  // Track time in matching queue
+  useEffect(() => {
+    if (matchingState.state === 'searching' && !matchingState.offerId) {
+      const timer = setInterval(() => {
+        setElapsedSeconds((prev) => prev + 1);
+      }, 1000);
+      return () => clearInterval(timer);
+    } else {
+      setElapsedSeconds(0);
+    }
+  }, [matchingState.state, matchingState.offerId]);
+
+  // Cycle reassuring status lines every 10 seconds
+  useEffect(() => {
+    if (matchingState.state === 'searching' && !matchingState.offerId) {
+      const statusTimer = setInterval(() => {
+        setStatusIndex((prev) => (prev + 1) % STATUS_LINES.length);
+      }, 10000);
+      return () => clearInterval(statusTimer);
+    }
+  }, [matchingState.state, matchingState.offerId]);
+
+  // Clean queue cancellation on browser tab close or navigate away
+  useEffect(() => {
+    const handleUnload = () => {
+      if (matchingState.state === 'searching' && !matchingState.offerId) {
+        socketService.send('leave_queue');
+        socketService.send('matching:leave');
+      }
+    };
+    window.addEventListener('beforeunload', handleUnload);
+    window.addEventListener('pagehide', handleUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleUnload);
+      window.removeEventListener('pagehide', handleUnload);
+    };
+  }, [matchingState.state, matchingState.offerId]);
 
   // Only allow test companion simulator in local development (import.meta.env.DEV) or for authenticated administrators
   const isDevOrAdmin = Boolean(import.meta.env.DEV || user?.role === 'admin' || user?.isAdmin);
@@ -38,16 +92,34 @@ export const MatchingView: React.FC<MatchingViewProps> = ({ onCancel, topics }) 
   };
 
   const handleLeave = () => {
+    navigator.vibrate?.(10);
     setConnecting(false);
+    socketService.send('leave_queue');
     leaveMatching();
     onCancel();
   };
 
+  const handleBroadenTopics = () => {
+    navigator.vibrate?.(10);
+    setActiveTopics([]);
+    enterMatching([]); // clears specific topic filters to match with anyone
+    onBroadenTopics?.();
+  };
+
+  const handleStepBack = () => {
+    navigator.vibrate?.(10);
+    handleLeave();
+  };
+
   return (
     <div
-      className="flex-1 flex flex-col justify-center items-center px-4 py-12 max-w-lg mx-auto text-center"
+      className="flex-1 flex flex-col justify-center items-center px-4 py-12 max-w-lg mx-auto text-center w-full"
       id="matching-view"
     >
+      <div className="w-full mb-4 rounded-2xl overflow-hidden shadow-2xs">
+        <ConnectionStatusBar />
+      </div>
+
       <motion.div
         initial={{ opacity: 0, scale: 0.98 }}
         animate={{ opacity: 1, scale: 1 }}
@@ -57,11 +129,67 @@ export const MatchingView: React.FC<MatchingViewProps> = ({ onCancel, topics }) 
         {/* STATE 1: SEARCHING / FINDING SOMEONE */}
         {matchingState.state === 'searching' && !matchingState.offerId && (
           <div className="space-y-6">
-            <div className="relative flex items-center justify-center py-6">
-              <span className="w-20 h-20 rounded-full bg-[#C86D51]/15 animate-ping absolute duration-1000" />
-              <span className="w-14 h-14 rounded-full bg-[#FAF0EB] border border-[#E8C7BC] flex items-center justify-center text-[#C86D51] relative shadow-xs">
-                <Radio className="w-6 h-6 animate-pulse" />
-              </span>
+            {/* Ambient pulsating circle / calm breathing animation */}
+            <div
+              className="relative flex items-center justify-center py-8 my-1 select-none"
+              id="ambient-breathing-animation"
+              aria-label="Ambient calm breathing animation"
+            >
+              {/* Outer breathing aura */}
+              <motion.div
+                className="absolute w-40 h-40 rounded-full bg-[#C86D51]/10 pointer-events-none"
+                animate={{
+                  scale: [1, 1.25, 1],
+                  opacity: [0.25, 0.55, 0.25],
+                }}
+                transition={{
+                  duration: 6,
+                  repeat: Infinity,
+                  ease: [0.4, 0, 0.2, 1],
+                }}
+              />
+
+              {/* Middle soft atmospheric circle */}
+              <motion.div
+                className="absolute w-28 h-28 rounded-full bg-[#FAF0EB] border border-[#E8C7BC]/80 pointer-events-none"
+                animate={{
+                  scale: [1, 1.12, 1],
+                  opacity: [0.6, 0.9, 0.6],
+                }}
+                transition={{
+                  duration: 6,
+                  repeat: Infinity,
+                  ease: [0.4, 0, 0.2, 1],
+                  delay: 0.2,
+                }}
+              />
+
+              {/* Core calm center circle with subtle breathing scale */}
+              <motion.div
+                className="relative w-16 h-16 rounded-full bg-[#FAF0EB] border border-[#E8C7BC] flex items-center justify-center text-[#C86D51] shadow-[0_4px_20px_-2px_rgba(200,109,81,0.2)] z-10"
+                animate={{
+                  scale: [0.96, 1.04, 0.96],
+                }}
+                transition={{
+                  duration: 6,
+                  repeat: Infinity,
+                  ease: [0.4, 0, 0.2, 1],
+                }}
+              >
+                {/* Inner glowing presence dot */}
+                <motion.div
+                  className="w-3.5 h-3.5 rounded-full bg-[#C86D51]"
+                  animate={{
+                    scale: [0.85, 1.25, 0.85],
+                    opacity: [0.75, 1, 0.75],
+                  }}
+                  transition={{
+                    duration: 6,
+                    repeat: Infinity,
+                    ease: [0.4, 0, 0.2, 1],
+                  }}
+                />
+              </motion.div>
             </div>
 
             <div className="space-y-2.5">
@@ -71,13 +199,28 @@ export const MatchingView: React.FC<MatchingViewProps> = ({ onCancel, topics }) 
               >
                 Finding someone who&apos;s available...
               </h2>
-              <p className="text-xs sm:text-sm text-[#78716C] max-w-xs mx-auto leading-relaxed">
-                Looking for another adult anywhere in the world who is ready for a genuine, unhurried conversation.
-              </p>
-              {topics && topics.length > 0 && (
-                <div className="flex items-center justify-center gap-1.5 flex-wrap pt-2">
+
+              {/* Reassuring status lines cycling every 10 seconds */}
+              <div className="h-7 flex items-center justify-center overflow-hidden">
+                <AnimatePresence mode="wait">
+                  <motion.p
+                    key={statusIndex}
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -4 }}
+                    transition={{ duration: 0.5, ease: 'easeOut' }}
+                    id="matching-status-cycle-text"
+                    className="text-xs sm:text-sm text-[#78716C] font-medium tracking-wide"
+                  >
+                    {STATUS_LINES[statusIndex]}
+                  </motion.p>
+                </AnimatePresence>
+              </div>
+
+              {activeTopics && activeTopics.length > 0 ? (
+                <div className="flex items-center justify-center gap-1.5 flex-wrap pt-1.5">
                   <span className="text-xs text-[#8C827A]">Topics:</span>
-                  {topics.map((t) => (
+                  {activeTopics.map((t) => (
                     <span
                       key={t}
                       className="px-2.5 py-0.5 bg-[#FAF0EB] text-[#C86D51] text-xs font-medium rounded-full border border-[#E8C7BC]"
@@ -86,16 +229,53 @@ export const MatchingView: React.FC<MatchingViewProps> = ({ onCancel, topics }) 
                     </span>
                   ))}
                 </div>
+              ) : (
+                <div className="pt-0.5">
+                  <span className="text-[11px] text-[#8C827A] italic">Matching with anyone worldwide</span>
+                </div>
               )}
             </div>
 
-            <div className="pt-4 flex flex-col items-center gap-3">
+            {/* EXTENDED WAIT REASSURANCE (> 45s) */}
+            {elapsedSeconds >= 45 && (
+              <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.4, ease: 'easeOut' }}
+                id="extended-wait-reassurance"
+                className="p-4 sm:p-5 rounded-2xl bg-[#F6F1EA] border border-[#E8DFD5] space-y-3 text-center shadow-2xs"
+              >
+                <p className="text-xs sm:text-sm text-[#6B625B] leading-relaxed">
+                  It&apos;s quiet right now. You can keep waiting, or broaden your topics.
+                </p>
+                <div className="flex flex-col sm:flex-row items-center justify-center gap-2.5 pt-1">
+                  <button
+                    type="button"
+                    id="broaden-topics-btn"
+                    onClick={handleBroadenTopics}
+                    className="w-full sm:w-auto px-5 py-2.5 text-xs font-medium text-[#FAF8F5] bg-[#C86D51] hover:bg-[#B65E43] rounded-full shadow-2xs transition-all cursor-pointer"
+                  >
+                    Broaden Topics to &apos;Any&apos;
+                  </button>
+                  <button
+                    type="button"
+                    id="step-back-btn"
+                    onClick={handleStepBack}
+                    className="w-full sm:w-auto px-5 py-2.5 text-xs font-medium text-[#5C534D] hover:text-[#2D2723] bg-[#EAE3D9] hover:bg-[#DDD5CA] border border-[#DDD3C7] rounded-full transition-all cursor-pointer"
+                  >
+                    Step Back
+                  </button>
+                </div>
+              </motion.div>
+            )}
+
+            <div className="pt-2 flex flex-col items-center gap-3">
               <button
                 id="matching-leave-btn"
                 onClick={handleLeave}
                 className="px-7 py-2.5 text-xs sm:text-sm text-[#5C534D] hover:text-[#2D2723] hover:bg-[#F5F2EB] border border-[#E7E0D8] rounded-full transition-all cursor-pointer shadow-2xs"
               >
-                Leave matching pool
+                Cancel
               </button>
 
               {isDevOrAdmin && (

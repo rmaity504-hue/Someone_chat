@@ -2,15 +2,39 @@ import React from 'react';
 import { useAuth } from '../context/AuthContext.js';
 import { WifiOff, RefreshCw } from 'lucide-react';
 
-export const ConnectionStatusBar: React.FC = () => {
-  const { connectionStatus, reconnectAttempts, maxReconnectAttempts, retryConnection } = useAuth();
+export interface ConnectionStatusBarProps {
+  forceShow?: boolean;
+}
 
-  if (connectionStatus === 'connected' || connectionStatus === 'idle') {
+export const ConnectionStatusBar: React.FC<ConnectionStatusBarProps> = ({ forceShow = false }) => {
+  const {
+    connectionStatus,
+    reconnectAttempts,
+    maxReconnectAttempts,
+    retryConnection,
+    inQueue,
+    currentSession,
+  } = useAuth();
+
+  // CONDITION RULE:
+  // If the current view is the Home/Landing page (/), topic selection, or admin screen, return null.
+  if (!forceShow && !inQueue && !currentSession) {
+    return null;
+  }
+
+  // If connected, idle, or not reconnecting/offline, render nothing
+  if (
+    connectionStatus === 'connected' ||
+    connectionStatus === 'idle' ||
+    connectionStatus === 'disconnected' ||
+    connectionStatus === 'connecting'
+  ) {
     return null;
   }
 
   return (
     <div
+      id="connection-status-bar"
       role="status"
       aria-live="polite"
       className={`w-full text-xs py-2 px-4 border-b transition-all duration-300 flex items-center justify-between ${
@@ -37,6 +61,7 @@ export const ConnectionStatusBar: React.FC = () => {
         </div>
 
         <button
+          id="connection-retry-btn"
           onClick={retryConnection}
           className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors ${
             connectionStatus === 'reconnecting'

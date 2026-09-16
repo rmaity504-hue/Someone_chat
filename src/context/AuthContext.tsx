@@ -1,8 +1,10 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { UserProfile, ChatMessage, Friendship, AdminStats } from '../types.js';
 import { getWebSocketUrl, socketService, SocketConnectionStatus } from '../services/socket.js';
-import { playMatchChime, playMessageSound, playDisconnectSound } from '../utils/feedback.js';
-import { filterChatMessage } from '../utils/privacyFilter.js';
+import { playMatchChime, playMessageSound, playDisconnectSound, triggerGentleHaptic } from '../utils/feedback.js';
+import { filterChatMessage, sanitizeChatMessage } from '../utils/privacyFilter.js';
+import { addEphemeralBlockedId } from '../utils/blockStorage.js';
+import { scrubSessionMemory } from '../utils/memoryPurge.js';
 
 export interface VolunteerRequest {
   offerId: string;
@@ -23,6 +25,8 @@ export interface ActiveSession {
   partnerDisplayName: string;
   isSimulator?: boolean;
   matchedTopics?: string[];
+  hasEnded?: boolean;
+  endedReason?: string;
 }
 
 interface AuthContextType {
@@ -36,7 +40,11 @@ interface AuthContextType {
   retryConnection: () => void;
   matchingState: MatchingState;
   activeSession: ActiveSession | null;
+  inQueue: boolean;
+  currentSession: ActiveSession | null;
   messages: ChatMessage[];
+  setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
+  purgeSessionMemory: () => void;
   isPartnerTyping: boolean;
   pendingVolunteerRequest: VolunteerRequest | null;
   postChatPartner: { partnerId: string; partnerDisplayName: string; roomId: string; sessionSignature?: string } | null;
@@ -48,6 +56,8 @@ interface AuthContextType {
   enterMatching: (topics?: string[]) => void;
   leaveMatching: () => void;
   skipToNext: (topics?: string[]) => void;
+  returnToQuietCorner: () => void;
+  lookForSomeoneNew: (topics?: string[]) => void;
   sendTyping: (isTyping: boolean) => void;
   acceptMatch: (roomId: string) => void;
   respondToVolunteer: (offerId: string, action: 'connect' | 'not_now') => void;
@@ -233,6 +243,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     const onMatchFoundHandler = (data: any) => {
+      triggerGentleHaptic(15);
       playMatchChime();
       setMatchingState({
         state: 'searching',
@@ -265,6 +276,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     const unsubSessionStart = socketService.on('session:start', (data) => {
+      triggerGentleHaptic(15);
       playMatchChime();
       setActiveSession({
         roomId: data.roomId,
@@ -272,8 +284,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         partnerDisplayName: data.partnerDisplayName,
         isSimulator: data.isSimulator,
         matchedTopics: data.matchedTopics,
+        hasEnded: false,
       });
       setMessages([]);
+      messagesRef.current = [];
       setIsPartnerTyping(false);
       setMatchingState({ state: 'idle' });
       setPendingVolunteerRequest(null);
@@ -328,23 +342,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unsubTypingStop = socketService.on('TYPING_STOP', handlePartnerTypingStop);
 
     const onPartnerDisconnectedHandler = (data: any) => {
+      triggerGentleHaptic(15);
       playDisconnectSound();
       setPartnerReconnecting(false);
       socketService.clearActiveSessionInfo();
       socketService.cancelReconnect();
-      setActiveSession(null);
+      setIsPartnerTyping(false);
+
+      // Strict client-side memory purge on partner_left / partner_disconnected
       setMessages([]);
       messagesRef.current = [];
-      setIsPartnerTyping(false);
-      setMatchingState({ state: 'idle' });
-      setSessionClosureActive(true);
-      if (data?.reason) {
+      scrubSessionMemory();
+      if (typeof window !== 'undefined') {
+        try {
+          window.gc?.();
+        } catch {}
+      }
+
+      // Mark session as ended so ChatView displays the closure card gracefully
+      setActiveSession((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          hasEnded: true,
+          endedReason: data?.reason || 'The other person has stepped away.',
+        };
+      });
+      if (data?.reason && data?.reason !== 'Conversation ended') {
         setSystemNotification(data.reason);
       }
     };
 
     const unsubPartnerDisconnected = socketService.on('partner_disconnected', onPartnerDisconnectedHandler);
     const unsubPartnerDisconnectedUpper = socketService.on('PARTNER_DISCONNECTED', onPartnerDisconnectedHandler);
+    const unsubPartnerLeft = socketService.on('partner_left', onPartnerDisconnectedHandler);
+    const unsubPartnerLeftUpper = socketService.on('PARTNER_LEFT', onPartnerDisconnectedHandler);
 
     const unsubChatBlocked = socketService.on('chat:blocked', (data) => {
       setSystemNotification(data.message);
@@ -391,33 +423,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     });
 
-    const unsubSessionEnded = socketService.on('session:ended', (data) => {
+    const onSessionEndedHandler = (data: any) => {
+      triggerGentleHaptic(15);
       playDisconnectSound();
       setPartnerReconnecting(false);
       socketService.clearActiveSessionInfo();
       socketService.cancelReconnect();
-      const hadMessages = messagesRef.current.length > 0 || (data.messageCount && data.messageCount > 0);
-      setActiveSession(null);
-      setMessages([]);
-      messagesRef.current = [];
       setIsPartnerTyping(false);
-      setMatchingState({ state: 'idle' });
-      if (data.safetyIntervention) {
+      const hadMessages = messagesRef.current.length > 0 || (data?.messageCount && data.messageCount > 0);
+      setActiveSession((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          hasEnded: true,
+          endedReason: data?.reason || 'This moment has passed.',
+        };
+      });
+      if (data?.safetyIntervention) {
         setSystemNotification(data.reason || 'The conversation was ended due to a community safety guideline violation.');
-      } else if (data.promptFriendship && data.partnerId && hadMessages) {
+      } else if (data?.promptFriendship && data.partnerId && hadMessages) {
         setPostChatPartner({
           partnerId: data.partnerId,
           partnerDisplayName: data.partnerDisplayName,
           roomId: data.roomId,
           sessionSignature: data.sessionSignature,
         });
-      } else {
-        setSessionClosureActive(true);
-        if (data.reason && data.reason !== 'Conversation ended' && data.reason !== 'Connection timed out.') {
-          setSystemNotification(data.reason);
-        }
+      } else if (data?.reason && data.reason !== 'Conversation ended' && data.reason !== 'Connection timed out.') {
+        setSystemNotification(data.reason);
       }
-    });
+    };
+
+    const unsubSessionEnded = socketService.on('session:ended', onSessionEndedHandler);
+    const unsubSessionEndedUpper = socketService.on('SESSION_ENDED', onSessionEndedHandler);
 
     const unsubSessionEnforcement = socketService.on('session:enforcement', (data) => {
       setActiveSession(null);
@@ -464,10 +501,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       unsubTypingStop();
       unsubPartnerDisconnected();
       unsubPartnerDisconnectedUpper();
+      unsubPartnerLeft();
+      unsubPartnerLeftUpper();
       unsubChatBlocked();
       unsubSessionResumed();
       unsubPartnerStatus();
       unsubSessionEnded();
+      unsubSessionEndedUpper();
       unsubSessionEnforcement();
       unsubFriendshipCreated();
       if (partnerTypingTimerRef.current) clearTimeout(partnerTypingTimerRef.current);
@@ -495,12 +535,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setMatchingState({ state: 'idle' });
   };
 
+  // Proper queue cancellation when closing the tab or navigating away while waiting in queue
+  useEffect(() => {
+    const handleQueueUnload = () => {
+      if (matchingState.state !== 'idle' && !activeSession) {
+        socketService.send('leave_queue');
+        socketService.send('matching:leave');
+        const storedToken = token || localStorage.getItem('someone_token');
+        if (storedToken && typeof navigator !== 'undefined' && navigator.sendBeacon) {
+          try {
+            const blob = new Blob([JSON.stringify({ token: storedToken })], { type: 'application/json' });
+            navigator.sendBeacon('/api/matching/leave', blob);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    };
+
+    window.addEventListener('beforeunload', handleQueueUnload);
+    window.addEventListener('pagehide', handleQueueUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleQueueUnload);
+      window.removeEventListener('pagehide', handleQueueUnload);
+    };
+  }, [matchingState.state, activeSession, token]);
+
   const enterMatching = (topics?: string[]) => {
     socketService.send('matching:enter', { topics });
     setMatchingState({ state: 'searching', message: "Finding someone who's available..." });
   };
 
   const leaveMatching = () => {
+    socketService.send('leave_queue');
     socketService.send('matching:leave');
     setMatchingState({ state: 'idle' });
   };
@@ -538,45 +605,70 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const sendMessage = (text: string) => {
     if (!activeSession || !text.trim()) return;
-    const filterResult = filterChatMessage(text);
-    if (!filterResult.allowed) {
-      setSystemNotification(filterResult.reason || 'Links are kept out to maintain a quiet sanctuary.');
-      return;
-    }
+    const sanitized = sanitizeChatMessage(text);
+    if (!sanitized) return;
+
     // Clear typing indicator immediately upon sending a message
     sendTyping(false);
     socketService.send('chat:send', {
       roomId: activeSession.roomId,
-      text: filterResult.sanitizedText,
+      text: sanitized,
     });
   };
 
-  const disconnectChat = () => {
-    socketService.clearActiveSessionInfo();
-    socketService.cancelReconnect();
-    setPartnerReconnecting(false);
-    if (activeSession) {
-      socketService.send('chat:disconnect', { roomId: activeSession.roomId });
-    }
-    setActiveSession(null);
+  const purgeSessionMemory = useCallback(() => {
     setMessages([]);
     messagesRef.current = [];
+    setActiveSession(null);
     setIsPartnerTyping(false);
+    setPartnerReconnecting(false);
+    socketService.clearActiveSessionInfo();
+    socketService.cancelReconnect();
+    scrubSessionMemory();
+    if (typeof window !== 'undefined') {
+      try {
+        window.gc?.();
+      } catch {}
+    }
+  }, []);
+
+  const disconnectChat = () => {
+    if (activeSession) {
+      socketService.send('leave_chat', { roomId: activeSession.roomId });
+      socketService.send('chat:disconnect', { roomId: activeSession.roomId });
+    }
+    purgeSessionMemory();
     setMatchingState({ state: 'idle' });
-    setSessionClosureActive(true);
+    setSessionClosureActive(false);
+  };
+
+  const returnToQuietCorner = () => {
+    if (activeSession) {
+      socketService.send('leave_chat', { roomId: activeSession.roomId });
+      socketService.send('chat:disconnect', { roomId: activeSession.roomId });
+    }
+    purgeSessionMemory();
+    setMatchingState({ state: 'idle' });
+    setSessionClosureActive(false);
+  };
+
+  const lookForSomeoneNew = (topics?: string[]) => {
+    const currentTopics = topics || activeSession?.matchedTopics || [];
+    if (activeSession) {
+      socketService.send('leave_chat', { roomId: activeSession.roomId });
+      socketService.send('chat:disconnect', { roomId: activeSession.roomId });
+    }
+    purgeSessionMemory();
+    setSessionClosureActive(false);
+    enterMatching(currentTopics);
   };
 
   const quickEmergencyExit = () => {
-    socketService.clearActiveSessionInfo();
-    socketService.cancelReconnect();
-    setPartnerReconnecting(false);
     if (activeSession) {
+      socketService.send('leave_chat', { roomId: activeSession.roomId });
       socketService.send('chat:disconnect', { roomId: activeSession.roomId });
     }
-    setActiveSession(null);
-    setMessages([]);
-    messagesRef.current = [];
-    setIsPartnerTyping(false);
+    purgeSessionMemory();
     setPostChatPartner(null);
     setSessionClosureActive(false);
     setMatchingState({ state: 'idle' });
@@ -620,6 +712,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   ): Promise<boolean> => {
     if (!token) return false;
     try {
+      // Store in client-side ephemeral storage to prevent re-matching in same queue session
+      addEphemeralBlockedId(reportedUserId);
+
       const res = await fetch('/api/safety/report', {
         method: 'POST',
         headers: {
@@ -629,9 +724,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         body: JSON.stringify({ reportedUserId, category, details, roomId }),
       });
       if (res.ok) {
-        if (activeSession) {
-          setActiveSession(null);
-        }
+        socketService.clearActiveSessionInfo();
+        socketService.cancelReconnect();
+        setPartnerReconnecting(false);
+        setActiveSession(null);
+        setMessages([]);
+        messagesRef.current = [];
+        setIsPartnerTyping(false);
+        setMatchingState({
+          state: 'idle',
+          message: 'You have disconnected and blocked this participant.',
+        });
+        setSystemNotification('You have disconnected and blocked this participant.');
         return true;
       }
     } catch (err) {
@@ -643,18 +747,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const blockUser = async (targetUserId: string): Promise<boolean> => {
     if (!token) return false;
     try {
+      // Store in client-side ephemeral storage
+      addEphemeralBlockedId(targetUserId);
+
       const res = await fetch('/api/safety/block', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ targetUserId }),
+        body: JSON.stringify({ targetUserId, roomId: activeSession?.roomId }),
       });
       if (res.ok) {
-        if (activeSession) {
-          setActiveSession(null);
-        }
+        socketService.clearActiveSessionInfo();
+        socketService.cancelReconnect();
+        setPartnerReconnecting(false);
+        setActiveSession(null);
+        setMessages([]);
+        messagesRef.current = [];
+        setIsPartnerTyping(false);
+        setMatchingState({
+          state: 'idle',
+          message: 'You have disconnected and blocked this participant.',
+        });
+        setSystemNotification('You have disconnected and blocked this participant.');
         return true;
       }
     } catch (err) {
@@ -842,7 +958,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         retryConnection,
         matchingState,
         activeSession,
+        inQueue: matchingState.state !== 'idle',
+        currentSession: activeSession,
         messages,
+        setMessages,
+        purgeSessionMemory,
         isPartnerTyping,
         pendingVolunteerRequest,
         postChatPartner,
@@ -854,6 +974,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         enterMatching,
         leaveMatching,
         skipToNext,
+        returnToQuietCorner,
+        lookForSomeoneNew,
         sendTyping,
         acceptMatch,
         respondToVolunteer,

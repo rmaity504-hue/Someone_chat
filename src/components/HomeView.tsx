@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext.js';
 import { motion } from 'motion/react';
-import { Sparkles, MessageSquare, ShieldCheck, Heart, Hash, Plus, X } from 'lucide-react';
+import { Sparkles, MessageSquare, ShieldCheck, Heart, Hash, Plus, X, WifiOff } from 'lucide-react';
 import { socketService } from '../services/socket.js';
+import { useOnlineStatus } from '../utils/useOnlineStatus.js';
 
 interface HomeViewProps {
   onFindSomeone: (topics?: string[]) => void;
@@ -27,12 +28,13 @@ export const HomeView: React.FC<HomeViewProps> = ({
   onOpenSafety,
 }) => {
   const { user } = useAuth();
+  const isOnline = useOnlineStatus();
   const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
   const [customTag, setCustomTag] = useState('');
   const [onlineCount, setOnlineCount] = useState<number | null>(null);
 
-  useEffect(() => {
-    // Initial fetch for presence count
+  const fetchPresence = useCallback(() => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
     fetch('/api/presence')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
@@ -41,6 +43,11 @@ export const HomeView: React.FC<HomeViewProps> = ({
         }
       })
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    // Initial fetch for presence count
+    fetchPresence();
 
     // Listen to real-time online_count updates from WebSocket
     const handleOnlineCount = (data: any) => {
@@ -54,9 +61,17 @@ export const HomeView: React.FC<HomeViewProps> = ({
     return () => {
       socketService.off('online_count', handleOnlineCount);
     };
-  }, []);
+  }, [fetchPresence]);
+
+  // When network connectivity recovers, refresh presence immediately
+  useEffect(() => {
+    if (isOnline) {
+      fetchPresence();
+    }
+  }, [isOnline, fetchPresence]);
 
   const toggleTopic = (topic: string) => {
+    navigator.vibrate?.(10);
     const clean = topic.trim().toLowerCase();
     if (selectedTopics.includes(clean)) {
       setSelectedTopics(selectedTopics.filter((t) => t !== clean));
@@ -72,12 +87,14 @@ export const HomeView: React.FC<HomeViewProps> = ({
     if (!clean) return;
     if (clean.length > 20) return;
     if (!selectedTopics.includes(clean) && selectedTopics.length < 3) {
+      navigator.vibrate?.(10);
       setSelectedTopics([...selectedTopics, clean]);
     }
     setCustomTag('');
   };
 
   const removeTopic = (topic: string) => {
+    navigator.vibrate?.(10);
     setSelectedTopics(selectedTopics.filter((t) => t !== topic));
   };
 
@@ -119,11 +136,19 @@ export const HomeView: React.FC<HomeViewProps> = ({
               className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#F5F2EB] border border-[#E7E0D8] text-xs font-medium text-[#5C534D] shadow-2xs"
             >
               <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#C86D51] opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-[#C86D51]"></span>
+                {isOnline ? (
+                  <>
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#C86D51] opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-[#C86D51]"></span>
+                  </>
+                ) : (
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-[#8C827A]"></span>
+                )}
               </span>
               <span>
-                {onlineCount && onlineCount > 1
+                {!isOnline
+                  ? 'offline • waiting for signal'
+                  : onlineCount && onlineCount > 1
                   ? `${onlineCount} people awake right now`
                   : '• quiet atmosphere'}
               </span>
@@ -224,7 +249,10 @@ export const HomeView: React.FC<HomeViewProps> = ({
               ))}
               <button
                 type="button"
-                onClick={() => setSelectedTopics([])}
+                onClick={() => {
+                  navigator.vibrate?.(10);
+                  setSelectedTopics([]);
+                }}
                 className="text-[11px] text-[#8C827A] hover:text-[#A84332] underline ml-auto cursor-pointer"
               >
                 Clear all
@@ -237,12 +265,27 @@ export const HomeView: React.FC<HomeViewProps> = ({
         <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3.5">
           <button
             id="home-find-someone-btn"
-            onClick={() => onFindSomeone(selectedTopics)}
-            className="w-full sm:w-auto px-9 py-3.5 bg-[#C86D51] hover:bg-[#B65E43] active:bg-[#A35239] text-[#FAF8F5] rounded-full font-medium text-base transition-all duration-200 shadow-[0_4px_20px_-2px_rgba(200,109,81,0.28)] hover:shadow-[0_6px_24px_-2px_rgba(200,109,81,0.38)] active:scale-[0.98] cursor-pointer"
+            onClick={() => {
+              if (!isOnline) return;
+              onFindSomeone(selectedTopics);
+            }}
+            disabled={!isOnline}
+            className={`w-full sm:w-auto px-9 py-3.5 rounded-full font-medium text-base transition-all duration-200 flex items-center justify-center gap-2.5 ${
+              !isOnline
+                ? 'bg-[#EAE4DC] text-[#78716C] border border-[#DDD5CA] cursor-not-allowed opacity-90 shadow-none'
+                : 'bg-[#C86D51] hover:bg-[#B65E43] active:bg-[#A35239] text-[#FAF8F5] shadow-[0_4px_20px_-2px_rgba(200,109,81,0.28)] hover:shadow-[0_6px_24px_-2px_rgba(200,109,81,0.38)] active:scale-[0.98] cursor-pointer'
+            }`}
           >
-            {selectedTopics.length > 0
-              ? `Find someone (${selectedTopics.length} topic${selectedTopics.length > 1 ? 's' : ''})`
-              : 'Find someone'}
+            {!isOnline ? (
+              <>
+                <span className="w-2 h-2 rounded-full bg-[#8C827A] animate-pulse shrink-0" />
+                <span id="home-offline-indicator-text">Waiting for network signal...</span>
+              </>
+            ) : selectedTopics.length > 0 ? (
+              `Find someone (${selectedTopics.length} topic${selectedTopics.length > 1 ? 's' : ''})`
+            ) : (
+              'Find someone'
+            )}
           </button>
 
           {!user && (

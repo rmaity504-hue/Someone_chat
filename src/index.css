@@ -14,6 +14,7 @@
     user-select: none;
     -webkit-touch-callout: none; /* Disables long-press popup menu */
     -webkit-tap-highlight-color: transparent; /* Removes grey/blue tap highlight box */
+    touch-action: manipulation; /* Disable double-tap zoom */
   }
 
   /* Explicitly re-enable selection ONLY for text inputs and textareas so users can edit and place cursors */
@@ -25,6 +26,8 @@
     -ms-user-select: text !important;
     user-select: text !important;
     -webkit-touch-callout: default !important;
+    touch-action: manipulation !important;
+    -webkit-tap-highlight-color: transparent !important;
   }
 
   /* 2. Prevent Overscroll / Chrome Pull-to-Refresh: Lock down html and body */
@@ -32,6 +35,8 @@
   body {
     overscroll-behavior-y: none;
     overscroll-behavior-x: none;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
     overflow-x: hidden;
     position: fixed;
     width: 100%;
@@ -158,5 +163,23 @@
 
 .spring-drawer-enter {
   animation: springDrawerSlideDown 0.22s cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+
+/* Foreground/Background Security Shield:
+   Temporarily blurs or masks sensitive conversation container to prevent screenshot previews in the Android app-switcher */
+body.app-switcher-blur {
+  filter: blur(28px) brightness(0.85) !important;
+  opacity: 0.2 !important;
+  pointer-events: none !important;
+  user-select: none !important;
+  transition: filter 0.05s ease, opacity 0.05s ease;
+}
+
+body.app-switcher-blur #active-chat-container,
+body.app-switcher-blur #chat-view,
+body.app-switcher-blur #chat-message-list,
+body.app-switcher-blur #chat-input-form {
+  filter: blur(32px) !important;
+  opacity: 0.05 !important;
 }
 

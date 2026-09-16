@@ -555,6 +555,21 @@ export class Matchmaker {
       return { success: false, error: 'No active session found.' };
     }
 
+    if (typeof text !== 'string') {
+      return { success: false, error: 'Invalid message payload' };
+    }
+
+    // Sanitize message payload: strip zero-width characters, trim string, discard empty messages, enforce strict 500-character ceiling
+    const cleanZeroWidth = text.replace(/[\u200B-\u200D\uFEFF\u200E\u200F\u202A-\u202E\u2060\u00AD]/g, '');
+    const trimmed = cleanZeroWidth.trim();
+    if (!trimmed || trimmed.length === 0) {
+      return { success: false, error: 'Empty message' };
+    }
+    const sanitized = trimmed.length > 500 ? trimmed.slice(0, 500).trim() : trimmed;
+    if (!sanitized || sanitized.length === 0) {
+      return { success: false, error: 'Empty message' };
+    }
+
     const restriction = db.isUserSuspendedOrBanned(senderId);
     if (restriction.isRestricted) {
       return { success: false, error: restriction.reason || 'User is restricted or suspended' };
@@ -562,9 +577,6 @@ export class Matchmaker {
 
     const sender = db.getUserById(senderId);
     if (!sender) return { success: false, error: 'User not found' };
-
-    // Off-platform links and handles scrambler to protect user anonymity
-    const { sanitized, wasModified } = sanitizeOffPlatformContent(text);
 
     session.messageCount = (session.messageCount || 0) + 1;
 
@@ -590,19 +602,65 @@ export class Matchmaker {
     this.sendToUser(senderId, 'chat:message', msg);
     this.sendToUser(recipientId, 'chat:message', msg);
 
-    // If external link or handle was hidden, notify sender with friendly notice
-    if (wasModified) {
-      this.sendToUser(senderId, 'chat:notice', {
-        message: 'Sharing external links or handles is disabled to protect anonymity.',
-      });
-    }
-
     // If talking with the simulated companion, trigger automated 2-second reply
     if (recipientId === BOT_USER_ID) {
       simulator.handleUserMessage(senderId, roomId, sanitized, this);
     }
 
     return { success: true };
+  }
+
+  /**
+   * Terminate an active session immediately with a respectful message and mutual block for UGC compliance.
+   * Disconnects both parties cleanly, clears matching references, and sets state to idle.
+   */
+  terminateWithMutualBlock(reporterId: string, reportedUserId: string, roomId?: string) {
+    const targetRoomId = roomId || this.userToRoom.get(reporterId) || this.userToRoom.get(reportedUserId);
+    if (targetRoomId) {
+      simulator.clearTimer(targetRoomId);
+      const session = this.activeSessions.get(targetRoomId);
+      if (session) {
+        session.status = 'ended';
+        this.activeSessions.delete(targetRoomId);
+        this.userToRoom.delete(session.user1Id);
+        this.userToRoom.delete(session.user2Id);
+      }
+      this.userToRoom.delete(reporterId);
+      this.userToRoom.delete(reportedUserId);
+    }
+
+    // Terminate matching queues if either user was in waiting pool
+    this.waitingPool.delete(reporterId);
+    this.waitingPool.delete(reportedUserId);
+
+    db.updateUser(reporterId, { status: 'offline' });
+    db.updateUser(reportedUserId, { status: 'offline' });
+
+    // Send respectful notification to reporting user
+    this.sendToUser(reporterId, 'session:ended', {
+      roomId: targetRoomId,
+      reason: 'You have disconnected and blocked this participant.',
+      promptFriendship: false,
+      blocked: true,
+      messageCount: 0,
+    });
+    this.sendToUser(reporterId, 'matching:state', {
+      state: 'idle',
+      message: 'You have disconnected and blocked this participant.',
+    });
+
+    // Send respectful disconnection to the other participant
+    this.sendToUser(reportedUserId, 'session:ended', {
+      roomId: targetRoomId,
+      reason: 'The conversation has ended.',
+      promptFriendship: false,
+      blocked: true,
+      messageCount: 0,
+    });
+    this.sendToUser(reportedUserId, 'matching:state', {
+      state: 'idle',
+      message: 'The conversation has ended.',
+    });
   }
 
   // Handle immediate enforcement for serious violations
@@ -715,7 +773,9 @@ export class Matchmaker {
 
       // Notify both users of disconnect, and prompt for mutual friendship with server signature
       this.sendToUser(session.user1Id, 'partner_disconnected', { roomId, reason });
+      this.sendToUser(session.user1Id, 'partner_left', { roomId, reason });
       this.sendToUser(session.user2Id, 'partner_disconnected', { roomId, reason });
+      this.sendToUser(session.user2Id, 'partner_left', { roomId, reason });
 
       this.sendToUser(session.user1Id, 'session:ended', {
         roomId,
@@ -739,7 +799,9 @@ export class Matchmaker {
     } else {
       // Chat was aborted before entering room, timed out, or had 0 messages sent
       this.sendToUser(session.user1Id, 'partner_disconnected', { roomId, reason });
+      this.sendToUser(session.user1Id, 'partner_left', { roomId, reason });
       this.sendToUser(session.user2Id, 'partner_disconnected', { roomId, reason });
+      this.sendToUser(session.user2Id, 'partner_left', { roomId, reason });
 
       this.sendToUser(session.user1Id, 'session:ended', {
         roomId,

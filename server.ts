@@ -60,6 +60,7 @@ async function startServer() {
     isAlive: boolean;
     messageTimestamps: number[];
     authenticatedUserId: string | null;
+    clientIp: string;
   }
 
   // WebSocket Server on /ws with payload limit
@@ -88,8 +89,45 @@ async function startServer() {
   // Volatile memory map for tracking message timestamps per user (burst rate-limiting)
   const userMessageTimestamps: Map<string, number[]> = new Map();
 
+  // Volatile map tracking queue entry timestamps per IP (max 10 requests per minute per IP to prevent bot exhaustion)
+  const wsQueueIpTimestamps: Map<string, number[]> = new Map();
+
+  function checkWsQueueRateLimit(ip: string): boolean {
+    const now = Date.now();
+    const windowMs = 60 * 1000;
+    const timestamps = (wsQueueIpTimestamps.get(ip) || []).filter((t) => now - t < windowMs);
+    if (timestamps.length >= 10) {
+      return false; // Exceeded 10 requests per minute
+    }
+    timestamps.push(now);
+    wsQueueIpTimestamps.set(ip, timestamps);
+    return true;
+  }
+
+  // Periodic cleanup of volatile rate-limit maps to maintain low memory usage
+  const cleanupRateLimitsInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [ip, timestamps] of wsQueueIpTimestamps.entries()) {
+      const valid = timestamps.filter((t) => now - t < 60000);
+      if (valid.length === 0) {
+        wsQueueIpTimestamps.delete(ip);
+      } else {
+        wsQueueIpTimestamps.set(ip, valid);
+      }
+    }
+    for (const [uid, timestamps] of userMessageTimestamps.entries()) {
+      const valid = timestamps.filter((t) => now - t < 3000);
+      if (valid.length === 0) {
+        userMessageTimestamps.delete(uid);
+      } else {
+        userMessageTimestamps.set(uid, valid);
+      }
+    }
+  }, 60000);
+
   wss.on('close', () => {
     clearInterval(heartbeatInterval);
+    clearInterval(cleanupRateLimitsInterval);
   });
 
   // Ambient Live Online Presence Tracking (Ephemerally throttled at most once every 3s)
@@ -129,6 +167,13 @@ async function startServer() {
     extWs.isAlive = true;
     extWs.messageTimestamps = [];
     extWs.authenticatedUserId = null;
+    const forwarded = req.headers['x-forwarded-for'];
+    const clientIp = typeof forwarded === 'string'
+      ? forwarded.split(',')[0].trim()
+      : Array.isArray(forwarded)
+      ? forwarded[0].trim()
+      : req.socket.remoteAddress || '127.0.0.1';
+    extWs.clientIp = clientIp;
 
     ws.on('pong', () => {
       extWs.isAlive = true;
@@ -243,10 +288,20 @@ async function startServer() {
             break;
 
           case 'matching:enter':
+            if (!checkWsQueueRateLimit(extWs.clientIp)) {
+              ws.send(
+                JSON.stringify({
+                  event: 'matching:error',
+                  data: { message: 'Too many matching queue requests (max 10 per minute). Please wait a moment.' },
+                })
+              );
+              break;
+            }
             matchmaker.enterMatching(currentUserId, Array.isArray(data?.topics) ? data.topics : []);
             break;
 
           case 'matching:leave':
+          case 'leave_queue':
             matchmaker.leaveMatching(currentUserId);
             break;
 
@@ -269,18 +324,23 @@ async function startServer() {
 
           case 'chat:send':
             if (data?.roomId && typeof data?.text === 'string') {
-              const text = data.text.trim();
-              if (text.length === 0 || text.length > 2000) return;
+              // Strip zero-width unicode spaces and invisible overrides
+              const cleanZeroWidth = data.text.replace(/[\u200B-\u200D\uFEFF\u200E\u200F\u202A-\u202E\u2060\u00AD]/g, '');
+              // Sanitize message payload: trim strings, discard empty messages, enforce strict 500-character ceiling
+              const trimmed = cleanZeroWidth.trim();
+              if (!trimmed || trimmed.length === 0) return;
+              const text = trimmed.length > 500 ? trimmed.slice(0, 500).trim() : trimmed;
+              if (!text || text.length === 0) return;
 
               // Burst Rate-Limiting: Track message timestamps per user in volatile memory.
-              // If a user sends >5 messages within 3 seconds, drop message and emit warning.
+              // If a user sends >5 messages within 3 seconds, drop message and emit calm warning.
               const nowTime = Date.now();
               const userTimestamps = (userMessageTimestamps.get(currentUserId) || []).filter((t) => nowTime - t < 3000);
               if (userTimestamps.length >= 5) {
                 ws.send(
                   JSON.stringify({
                     event: 'chat:warning',
-                    data: { message: 'You are sending messages too fast. Please slow down (max 5 messages per 3s).' },
+                    data: { message: 'Take a breath. Please slow down (max 5 messages per 3s).' },
                   })
                 );
                 return;
@@ -313,27 +373,8 @@ async function startServer() {
                 return;
               }
 
-              // Sanctuary Data Filter: Block external links
-              const URL_CHECK = /(?:https?:\/\/|ftps?:\/\/|www\.)[^\s/$.?#].[^\s]*|\b[a-zA-Z0-9-]+\.(?:com|org|net|io|co|app|me|dev|xyz|info|edu|gov|site|online|link|ai|tv|gg|club)\b(?:\/[^\s]*)?/i;
-              if (URL_CHECK.test(text)) {
-                ws.send(
-                  JSON.stringify({
-                    event: 'chat:warning',
-                    data: { message: 'Links are kept out to maintain a quiet sanctuary.' },
-                  })
-                );
-                return;
-              }
-
-              // Sanctuary Data Filter: Redact 10+ digit phone numbers
-              const PHONE_CHECK = /(?:\+?\d{1,3}[\s.-]?)?\(?\d{2,4}\)?[\s.-]?\d{2,4}[\s.-]?\d{3,5}\b|\b(?:\+?\d[\s().-]*){10,}\d\b/g;
-              const safeText = text.replace(PHONE_CHECK, (match) => {
-                const digits = (match.match(/\d/g) || []).length;
-                return digits >= 10 ? '[redacted]' : match;
-              });
-
               // Server-side safety assessment
-              const safety = evaluateMessageSafety(safeText);
+              const safety = evaluateMessageSafety(text);
 
               if (safety.isViolating && safety.isSeriousSexualViolation) {
                 // Immediate enforcement for clear serious violations:
@@ -356,20 +397,21 @@ async function startServer() {
                   displayName: user ? user.displayName : 'Unknown',
                   roomId: data.roomId,
                   triggerCategory: safety.category || 'violation',
-                  flaggedText: safeText,
+                  flaggedText: text,
                   severity: safety.severity === 'severe' || safety.severity === 'high' ? 'high' : 'medium',
                 });
 
                 if (safety.severity === 'severe' || safety.severity === 'high') {
-                  matchmaker.handleSafetyViolation(currentUserId, data.roomId, safety, safeText);
+                  matchmaker.handleSafetyViolation(currentUserId, data.roomId, safety, text);
                   return;
                 }
               }
 
-              matchmaker.sendMessage(currentUserId, data.roomId, safeText);
+              matchmaker.sendMessage(currentUserId, data.roomId, text);
             }
             break;
 
+          case 'leave_chat':
           case 'chat:disconnect':
             if (data?.roomId && matchmaker.isUserInRoom(currentUserId, data.roomId)) {
               matchmaker.endSession(data.roomId, 'Left the conversation');
@@ -378,6 +420,15 @@ async function startServer() {
 
           case 'chat:next':
           case 'chat:skip':
+            if (!checkWsQueueRateLimit(extWs.clientIp)) {
+              ws.send(
+                JSON.stringify({
+                  event: 'chat:warning',
+                  data: { message: 'Queue rate limit reached (max 10 per minute). Please wait a moment.' },
+                })
+              );
+              break;
+            }
             matchmaker.skipToNext(currentUserId, Array.isArray(data?.topics) ? data.topics : []);
             break;
 

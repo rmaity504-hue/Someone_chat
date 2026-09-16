@@ -18,7 +18,6 @@ import { AboutPhilosophyModal } from './components/AboutPhilosophyModal.js';
 import { ContactAdminModal } from './components/ContactAdminModal.js';
 import { InstallGuideModal } from './components/InstallGuideModal.js';
 import { SessionClosureCard } from './components/SessionClosureCard.js';
-import { ConnectionStatusBar } from './components/ConnectionStatusBar.js';
 import { InstallProvider, useInstall } from './context/InstallContext.js';
 import { AlertOctagon, AlertCircle, X, MessageSquare, Info } from 'lucide-react';
 
@@ -28,6 +27,7 @@ function MainApp() {
     activeSession,
     matchingState,
     enterMatching,
+    leaveMatching,
     systemNotification,
     clearNotification,
     sessionClosureActive,
@@ -81,28 +81,27 @@ function MainApp() {
     user && (user.status === 'restricted' || user.status === 'suspended' || user.status === 'banned');
 
   return (
-    <div className="min-h-screen text-[#2D2723] flex flex-col font-sans selection:bg-[#C86D51]/20 selection:text-[#2D2723]">
-      {/* Navigation */}
-      <Navbar
-        onOpenAuth={() => setAuthModalOpen(true)}
-        onOpenFriends={() => setFriendsModalOpen(true)}
-        onOpenAdmin={() => setAdminModalOpen(true)}
-        onOpenSafety={() => setSafetyModalOpen(true)}
-        onOpenDeleteAccount={() => setDeleteAccountModalOpen(true)}
-        onOpenSecurity={() => setSecurityModalOpen(true)}
-        onOpenAbout={(tab) => {
-          setAboutInitialTab(tab || 'philosophy');
-          setAboutModalOpen(true);
-        }}
-        onOpenContactAdmin={() => setContactAdminOpen(true)}
-        onChatNow={() => handleFindSomeone()}
-      />
-
-      {/* Unobtrusive WebSocket Resilience & Reconnection Bar */}
-      <ConnectionStatusBar />
+    <div className={`${activeSession ? 'h-[100dvh] max-h-[100dvh] sm:h-auto sm:min-h-screen overflow-hidden sm:overflow-visible' : 'min-h-screen'} text-[#2D2723] flex flex-col font-sans selection:bg-[#C86D51]/20 selection:text-[#2D2723]`}>
+      {/* Navigation (hidden on mobile during active chat so 100dvh viewport and virtual keyboard dock perfectly) */}
+      <div className={activeSession ? 'hidden sm:block' : ''}>
+        <Navbar
+          onOpenAuth={() => setAuthModalOpen(true)}
+          onOpenFriends={() => setFriendsModalOpen(true)}
+          onOpenAdmin={() => setAdminModalOpen(true)}
+          onOpenSafety={() => setSafetyModalOpen(true)}
+          onOpenDeleteAccount={() => setDeleteAccountModalOpen(true)}
+          onOpenSecurity={() => setSecurityModalOpen(true)}
+          onOpenAbout={(tab) => {
+            setAboutInitialTab(tab || 'philosophy');
+            setAboutModalOpen(true);
+          }}
+          onOpenContactAdmin={() => setContactAdminOpen(true)}
+          onChatNow={() => handleFindSomeone()}
+        />
+      </div>
 
       {/* Account Enforcement Banner if Restricted/Suspended */}
-      {isRestrictedOrSuspended && (
+      {!activeSession && isRestrictedOrSuspended && (
         <div className="bg-[#FAF0E6] border-b border-[#E7D7C5] py-3 px-4 text-xs text-[#7A3E26] flex items-center justify-between">
           <div className="max-w-4xl mx-auto flex items-center gap-2 w-full justify-between">
             <div className="flex items-center gap-2">
@@ -123,11 +122,20 @@ function MainApp() {
       )}
 
       {/* Primary Content View */}
-      <main className={`flex-1 flex flex-col items-center justify-center ${activeSession ? 'p-0 sm:p-4 w-full' : 'p-4'}`}>
+      <main className={`flex-1 flex flex-col items-center justify-center ${activeSession ? 'p-0 sm:p-4 w-full h-[100dvh] max-h-[100dvh] sm:h-auto overflow-hidden' : 'p-4'}`}>
         {activeSession ? (
           <ChatView />
         ) : matchingState.state !== 'idle' ? (
-          <MatchingView onCancel={() => {}} topics={pendingTopics} />
+          <MatchingView
+            onCancel={() => {
+              setPendingTopics([]);
+              leaveMatching();
+            }}
+            topics={pendingTopics}
+            onBroadenTopics={() => {
+              setPendingTopics([]);
+            }}
+          />
         ) : (
           <HomeView
             onFindSomeone={handleFindSomeone}
@@ -234,7 +242,7 @@ function MainApp() {
 
       {/* Ephemeral Session Closure Ritual Modal */}
       <SessionClosureCard
-        isOpen={sessionClosureActive}
+        isOpen={sessionClosureActive && !activeSession}
         onFindAnother={() => {
           dismissSessionClosure();
           handleFindSomeone(pendingTopics);

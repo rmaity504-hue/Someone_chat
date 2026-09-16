@@ -92,7 +92,16 @@ export function onSoundMuteChange(handler: (muted: boolean) => void): () => void
 /**
  * Haptic helpers using navigator.vibrate
  */
+export function triggerGentleHaptic(durationMs = 15): void {
+  if (typeof window !== 'undefined' && 'navigator' in window && typeof navigator.vibrate === 'function') {
+    try {
+      navigator.vibrate(durationMs);
+    } catch {}
+  }
+}
+
 export function triggerMatchHaptic(): void {
+  triggerGentleHaptic(15);
   if (isMuted) return;
   if (typeof window !== 'undefined' && 'navigator' in window && typeof navigator.vibrate === 'function') {
     try {
@@ -111,6 +120,7 @@ export function triggerMessageHaptic(): void {
 }
 
 export function triggerDisconnectHaptic(): void {
+  triggerGentleHaptic(15);
   if (isMuted) return;
   if (typeof window !== 'undefined' && 'navigator' in window && typeof navigator.vibrate === 'function') {
     try {
