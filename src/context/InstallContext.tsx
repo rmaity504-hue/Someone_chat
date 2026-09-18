@@ -43,6 +43,14 @@ export const InstallProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     setIsStandalone(checkStandalone());
 
+    const standaloneMedia = typeof window !== 'undefined' ? window.matchMedia('(display-mode: standalone)') : null;
+    const handleMediaChange = (e: MediaQueryListEvent) => {
+      if (e.matches) {
+        setIsStandalone(true);
+      }
+    };
+    standaloneMedia?.addEventListener?.('change', handleMediaChange);
+
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       deferredPrompt = e;
@@ -60,6 +68,7 @@ export const InstallProvider: React.FC<{ children: React.ReactNode }> = ({ child
     window.addEventListener('appinstalled', handleAppInstalled);
 
     return () => {
+      standaloneMedia?.removeEventListener?.('change', handleMediaChange);
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
       window.removeEventListener('appinstalled', handleAppInstalled);
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);

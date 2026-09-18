@@ -22,6 +22,11 @@ async function startServer() {
 
   app.use(express.json());
 
+  // 1. Dedicated health check & keep-alive route for Render (zero WebSockets/session touch)
+  app.get('/api/health', (req, res) => {
+    res.status(200).json({ status: 'ok', timestamp: Date.now() });
+  });
+
   // API Routes
   app.use('/api', apiRouter);
 
@@ -47,11 +52,6 @@ async function startServer() {
     } else {
       res.status(404).json({ error: 'assetlinks.json not found' });
     }
-  });
-
-  // Health check
-  app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', name: 'Someone' });
   });
 
   const server = http.createServer(app);
@@ -578,7 +578,13 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    // Production static serving for Vite built assets
+    const distPath = fs.existsSync(path.resolve(process.cwd(), 'dist'))
+      ? path.resolve(process.cwd(), 'dist')
+      : fs.existsSync(path.join(__dirname, '../dist'))
+        ? path.join(__dirname, '../dist')
+        : path.join(__dirname, 'dist');
+
     app.use(express.static(distPath, { dotfiles: 'allow' }));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));

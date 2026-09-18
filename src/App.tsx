@@ -19,7 +19,7 @@ import { ContactAdminModal } from './components/ContactAdminModal.js';
 import { InstallGuideModal } from './components/InstallGuideModal.js';
 import { SessionClosureCard } from './components/SessionClosureCard.js';
 import { PrivacyPolicyView } from './components/PrivacyPolicyView.js';
-import { DiagnosticPanel } from './components/DiagnosticPanel.js';
+import { PWAInstallButton } from './components/PWAInstallButton.js';
 import { InstallProvider, useInstall } from './context/InstallContext.js';
 import { AlertOctagon, AlertCircle, X, MessageSquare, Info } from 'lucide-react';
 
@@ -98,20 +98,12 @@ function MainApp() {
 
   if (currentPath === '/privacy') {
     return (
-      <>
-        <PrivacyPolicyView
-          onBackToHome={() => {
-            window.history.pushState(null, '', '/');
-            setCurrentPath('/');
-          }}
-        />
-        <DiagnosticPanel
-          onOpenPrivacy={() => {
-            window.history.pushState(null, '', '/privacy');
-            setCurrentPath('/privacy');
-          }}
-        />
-      </>
+      <PrivacyPolicyView
+        onBackToHome={() => {
+          window.history.pushState(null, '', '/');
+          setCurrentPath('/');
+        }}
+      />
     );
   }
 
@@ -216,6 +208,7 @@ function MainApp() {
               >
                 Privacy Policy
               </button>
+              <PWAInstallButton variant="footer" />
               <button
                 id="footer-contact-admin-btn"
                 onClick={() => setContactAdminOpen(true)}
@@ -306,7 +299,7 @@ function MainApp() {
         </aside>
       )}
 
-      {/* Diagnostic & Connection Notification Toast */}
+      {/* Connection Notification Toast */}
       {systemNotification && (
         <aside
           role="alert"
@@ -328,14 +321,6 @@ function MainApp() {
           </button>
         </aside>
       )}
-
-      {/* Interactive Diagnostics & Functional Integrity Overlay */}
-      <DiagnosticPanel
-        onOpenPrivacy={() => {
-          window.history.pushState(null, '', '/privacy');
-          setCurrentPath('/privacy');
-        }}
-      />
     </div>
   );
 }
