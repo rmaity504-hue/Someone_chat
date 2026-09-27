@@ -283,7 +283,7 @@ export const ChatView: React.FC = () => {
   };
 
   // Client-Side Rate Limiter:
-  // - Disallows sending > 1 message every 800ms
+  // - Disallows sending > 1 message per second (1000ms)
   // - If user sends > 5 messages within 3 seconds, disables send button for 5s with calm notice
   const checkRateLimit = (): boolean => {
     if (isRateLimited) return false;
@@ -292,20 +292,20 @@ export const ChatView: React.FC = () => {
     // Prune timestamps older than 3 seconds
     sendTimestampsRef.current = sendTimestampsRef.current.filter((t) => now - t < 3000);
 
-    // 1. Spacing threshold: at least 800ms between sends
-    if (now - lastSendTimeRef.current < 800) {
+    // 1. Spacing threshold: at least 1000ms between sends
+    if (now - lastSendTimeRef.current < 1000) {
       sendTimestampsRef.current.push(now);
 
       if (sendTimestampsRef.current.length > 5) {
         setIsRateLimited(true);
-        setRateLimitNotice('Take a breath. Please slow down.');
+        setRateLimitNotice('Please slow down. Maximum 1 message per second.');
         if (rateLimitTimerRef.current) clearTimeout(rateLimitTimerRef.current);
         rateLimitTimerRef.current = setTimeout(() => {
           setIsRateLimited(false);
           setRateLimitNotice(null);
         }, 5000);
       } else {
-        setRateLimitNotice('Take a breath. Please slow down.');
+        setRateLimitNotice('Please slow down. Maximum 1 message per second.');
         if (rateLimitTimerRef.current) clearTimeout(rateLimitTimerRef.current);
         rateLimitTimerRef.current = setTimeout(() => {
           setRateLimitNotice(null);
@@ -317,7 +317,7 @@ export const ChatView: React.FC = () => {
     // 2. Burst threshold: max 5 messages in 3 seconds
     if (sendTimestampsRef.current.length >= 5) {
       setIsRateLimited(true);
-      setRateLimitNotice('Take a breath. Please slow down.');
+      setRateLimitNotice('Please slow down. Maximum 1 message per second.');
       if (rateLimitTimerRef.current) clearTimeout(rateLimitTimerRef.current);
       rateLimitTimerRef.current = setTimeout(() => {
         setIsRateLimited(false);
@@ -776,7 +776,7 @@ export const ChatView: React.FC = () => {
         </div>
       )}
 
-      {/* Discreet Inline PII & Contact Exchanging Alert */}
+      {/* Discreet Inline Anti-Off-Platform & Contact Exchanging Alert */}
       {showPiiAlert && (
         <div
           id="chat-pii-alert"
@@ -788,7 +788,7 @@ export const ChatView: React.FC = () => {
               <ShieldAlert className="w-4 h-4 text-[#C86D51]" />
             </div>
             <p className="leading-snug text-[#5C534D]">
-              For your safety and anonymity, sharing personal contacts or links is discouraged.
+              Sharing links, handles, or phone numbers is not permitted in this space.
             </p>
           </div>
           <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
@@ -799,15 +799,6 @@ export const ChatView: React.FC = () => {
               className="px-3.5 py-1.5 text-xs font-medium text-[#5C534D] hover:text-[#2D2723] bg-[#F2ECE4] hover:bg-[#E7DFD3] rounded-full border border-[#E0D7CC] transition-colors cursor-pointer"
             >
               Edit message
-            </button>
-            <button
-              type="button"
-              id="pii-send-anyway-btn"
-              onClick={handleConfirmSendAnyway}
-              disabled={isRateLimited}
-              className="px-3.5 py-1.5 text-xs font-medium text-[#FAF8F5] bg-[#C86D51] hover:bg-[#B65E43] rounded-full shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
-            >
-              Send anyway
             </button>
           </div>
         </div>
@@ -858,7 +849,7 @@ export const ChatView: React.FC = () => {
             className="w-full px-4 py-2.5 bg-[#F5F2EB] border border-[#E7E0D8] rounded-full text-base sm:text-sm text-[#2D2723] placeholder:text-[#8C827A] focus:outline-none focus:ring-2 focus:ring-[#C86D51]/30 focus:border-[#C86D51] disabled:opacity-70 disabled:cursor-not-allowed disabled:bg-[#ECE6DE]"
             autoFocus={!isSessionEnded}
           />
-          {input.length > 400 && !isSessionEnded && (
+          {input.length > 180 && !isSessionEnded && (
             <span
               id="chat-char-counter"
               className={`absolute right-3 text-[11px] font-mono px-1.5 py-0.5 rounded-md ${

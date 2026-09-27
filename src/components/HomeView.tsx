@@ -304,6 +304,9 @@ export const HomeView: React.FC<HomeViewProps> = ({
           <p>
             18+ only. Genuine text conversation between two adults. No profiles, no popularity, no dating algorithms.
           </p>
+          <p className="text-[11px] text-[#78716C] leading-normal">
+            Zero tolerance for illegal content, abuse, or solicitations. Prohibited patterns trigger immediate session termination. This platform complies with all statutory legal obligations.
+          </p>
           <p>
             Conversations are subject to clearly disclosed safety monitoring.{' '}
             <button

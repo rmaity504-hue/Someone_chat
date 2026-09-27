@@ -248,8 +248,8 @@ class SocketService {
         console.log(`[WebSocket] Closed (code: ${event.code}, reason: ${event.reason || 'none'})`);
         this.stopHeartbeat();
 
-        // Do not auto-reconnect if closed intentionally or banned/restricted
-        if (this.intentionalClose || event.code === 1000 || event.code === 4003) {
+        // Do not auto-reconnect if closed intentionally or banned/restricted/policy violation
+        if (this.intentionalClose || event.code === 1000 || event.code === 1008 || event.code === 4003) {
           this.setStatus('disconnected');
           return;
         }

@@ -392,3 +392,139 @@ export function sanitizeOffPlatformContent(text: string): { sanitized: string; w
   return { sanitized, wasModified };
 }
 
+// ----------------------------------------------------
+// 3. Anti-Off-Platform Pivoting / External Contact Handshakes Interceptor
+// Detects links, phone numbers (10+ digits), and social handles/invites
+// ----------------------------------------------------
+
+// External links/URLs: http://, https://, www., or domain extensions
+const URL_INTERCEPTOR_REGEX =
+  /(?:https?:\/\/|ftps?:\/\/|www\.)[^\s/$.?#].[^\s]*|\b[a-zA-Z0-9-]+\.(?:com|org|net|io|co|me|gg|xyz|app|site|online|link|info|biz|ru|cn|to|top|tv|cc|ly|dev|tech|club)\b(?:\/[^\s]*)?|\b(?:h\s*t\s*t\s*p|w\s*w\s*w|\(dot\)|\[dot\]|dot\s*com)\b/i;
+
+// Phone numbers: 10+ consecutive or spaced digits
+const PHONE_NUMBER_INTERCEPTOR_REGEX =
+  /(?:\+?\d[\s\-_().]{0,2}){10,}/;
+
+// Social handles and invites: @username, t.me/, wa.me/, discord.gg/, etc.
+const SOCIAL_HANDLE_INTERCEPTOR_REGEX =
+  /(?:^|\s)@[a-zA-Z0-9_.]{3,30}\b|\b(?:t\.me|telegram\.me|wa\.me|discord\.(?:gg|com\/invite)|instagram\.com|snapchat\.com|tiktok\.com)\/[^\s]+|(?:\b(?:ig|insta|instagram|snap|snapchat|discord|tg|telegram|twitter|tiktok|wa|whatsapp|kik)\s*[:=]\s*@?[a-zA-Z0-9_.-]{3,}\b)/i;
+
+export interface ContactHandshakeResult {
+  hasHandshake: boolean;
+  reason?: string;
+  type?: 'link' | 'phone' | 'handle';
+}
+
+/**
+ * Checks if a message contains external contact links, phone numbers, or social handles.
+ */
+export function detectExternalContactHandshake(rawText: string): ContactHandshakeResult {
+  if (!rawText) return { hasHandshake: false };
+  const trimmed = rawText.trim();
+  const normalized = normalizeTextForModeration(trimmed);
+
+  // 1. External links / URLs
+  if (URL_INTERCEPTOR_REGEX.test(trimmed) || URL_INTERCEPTOR_REGEX.test(normalized)) {
+    return {
+      hasHandshake: true,
+      reason: 'External link or URL detected.',
+      type: 'link',
+    };
+  }
+
+  // 2. Phone numbers (10+ consecutive or spaced digits)
+  if (PHONE_NUMBER_INTERCEPTOR_REGEX.test(trimmed) || PHONE_NUMBER_INTERCEPTOR_REGEX.test(normalized)) {
+    return {
+      hasHandshake: true,
+      reason: 'Phone number detected.',
+      type: 'phone',
+    };
+  }
+
+  // 3. Social handles / invites (@username, t.me/, wa.me/, discord.gg/)
+  if (SOCIAL_HANDLE_INTERCEPTOR_REGEX.test(trimmed) || SOCIAL_HANDLE_INTERCEPTOR_REGEX.test(normalized)) {
+    return {
+      hasHandshake: true,
+      reason: 'Social handle or invite detected.',
+      type: 'handle',
+    };
+  }
+
+  return { hasHandshake: false };
+}
+
+// ----------------------------------------------------
+// 4. Severe Threat & Illegal Harmful Content Interceptor
+// Detects weapons trafficking, illicit contraband transactions, terrorism, and severe exploitation
+// ----------------------------------------------------
+
+// Weapons trafficking & illegal firearms
+const WEAPONS_TRAFFICKING_REGEX =
+  /\b((buy|sell|selling|trade|ship|shipping|order|vendor|dealer|trafficking)\s+([a-z\s]{0,15})?(weapons?|firearms?|ghost\s*guns?|unregistered\s*(guns?|firearms?)|glock\s*switch(es)?|auto\s*sear|silencers?|suppressors?|ammo|ammunition|assault\s*rifles?|explosives?)|weapons?\s*trafficking|arms\s*dealing|arms\s*trafficking|illegal\s*firearms|gun\s*running)\b/i;
+
+// Illicit contraband transactions & illicit drug vendor trade
+const CONTRABAND_TRANSACTION_REGEX =
+  /\b((buy|sell|selling|order|vendor|delivery|dealer|plug|cop|stash|grams|kilos|ounces|supply)\s+([a-z\s]{0,15})?(fentanyl|heroin|meth|methamphetamine|cocaine|crack|oxycodone|percocet|xanax\s*bars|ecstasy|mdma|ketamine|contraband|illicit\s*substances?)|fentanyl\s*(vendor|pills|dealer|sale)|darknet\s*(market|vendor|drugs)|selling\s*drugs|drug\s*cartel|drug\s*trafficking)\b/i;
+
+// Terrorism & violent extremism
+const TERRORISM_REGEX =
+  /\b((how\s+to\s+make|instructions?\s+for|recipe\s+for|building)\s+([a-z\s]{0,15})?(pipe\s*bomb|fertilizer\s*bomb|pressure\s*cooker\s*bomb|ied|improvised\s*explosive|car\s*bomb|suicide\s*vest)|pipe\s*bombs?|bomb\s*making|commit\s*a\s*terrorist|terrorist\s*attack|suicide\s*bombing|al-qaeda|isis\s*recruitment|daesh|jihadist\s*attack|white\s*supremacist\s*attack)\b/i;
+
+// Severe exploitation, CSAM, contract violence
+const SEVERE_EXPLOITATION_REGEX =
+  /\b(csam|csem|child\s*porn|cp\s*(trade|drop|links?|pics?)|underage\s*(nudes?|porn|sex)|pedophile|pedophilia|toddler\s*porn|preteen\s*porn|human\s*trafficking|organ\s*harvesting|snuff\s*film|hire\s+(a\s+)?hitman|murder\s+for\s+hire|assassination\s+bounty)\b/i;
+
+export interface SevereHarmfulResult {
+  isSevere: boolean;
+  category?: 'weapons_trafficking' | 'contraband' | 'terrorism' | 'severe_exploitation';
+  reason?: string;
+}
+
+/**
+ * Server-side regex filter detecting explicit terms associated with
+ * weapons trafficking, illicit contraband transactions, terrorism, and severe exploitation.
+ */
+export function evaluateSevereHarmfulContent(rawText: string): SevereHarmfulResult {
+  if (!rawText) return { isSevere: false };
+  const trimmed = rawText.trim();
+  const normalized = normalizeTextForModeration(trimmed);
+
+  // 1. Severe exploitation & CSAM
+  if (SEVERE_EXPLOITATION_REGEX.test(trimmed) || SEVERE_EXPLOITATION_REGEX.test(normalized)) {
+    return {
+      isSevere: true,
+      category: 'severe_exploitation',
+      reason: 'Prohibited illegal content: severe exploitation.',
+    };
+  }
+
+  // 2. Terrorism & violent extremism
+  if (TERRORISM_REGEX.test(trimmed) || TERRORISM_REGEX.test(normalized)) {
+    return {
+      isSevere: true,
+      category: 'terrorism',
+      reason: 'Prohibited illegal content: terrorism or explosive materials.',
+    };
+  }
+
+  // 3. Weapons trafficking
+  if (WEAPONS_TRAFFICKING_REGEX.test(trimmed) || WEAPONS_TRAFFICKING_REGEX.test(normalized)) {
+    return {
+      isSevere: true,
+      category: 'weapons_trafficking',
+      reason: 'Prohibited illegal content: illicit firearms or weapons trafficking.',
+    };
+  }
+
+  // 4. Illicit contraband transactions
+  if (CONTRABAND_TRANSACTION_REGEX.test(trimmed) || CONTRABAND_TRANSACTION_REGEX.test(normalized)) {
+    return {
+      isSevere: true,
+      category: 'contraband',
+      reason: 'Prohibited illegal content: illicit contraband transaction.',
+    };
+  }
+
+  return { isSevere: false };
+}
+

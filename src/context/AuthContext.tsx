@@ -457,6 +457,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const unsubSessionEnded = socketService.on('session:ended', onSessionEndedHandler);
     const unsubSessionEndedUpper = socketService.on('SESSION_ENDED', onSessionEndedHandler);
+    const unsubSessionEndedType = socketService.on('session_ended', onSessionEndedHandler);
+
+    const unsubSocketError = socketService.on('error', (data: any) => {
+      if (data?.message) {
+        setSystemNotification(data.message);
+      }
+    });
 
     const unsubSessionEnforcement = socketService.on('session:enforcement', (data) => {
       setActiveSession(null);
@@ -510,6 +517,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       unsubPartnerStatus();
       unsubSessionEnded();
       unsubSessionEndedUpper();
+      unsubSessionEndedType();
+      unsubSocketError();
       unsubSessionEnforcement();
       unsubFriendshipCreated();
       if (partnerTypingTimerRef.current) clearTimeout(partnerTypingTimerRef.current);

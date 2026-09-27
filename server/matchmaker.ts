@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import { db } from './db.js';
 import { MatchSession, ChatMessage } from '../src/types.js';
-import { SafetyEvaluation, sanitizeOffPlatformContent } from './safety.js';
+import { SafetyEvaluation, sanitizeOffPlatformContent, detectExternalContactHandshake, evaluateSevereHarmfulContent } from './safety.js';
 import crypto from 'crypto';
 import { simulator, BOT_USER_ID, BOT_NAME } from './simulator.js';
 
@@ -559,15 +559,31 @@ export class Matchmaker {
       return { success: false, error: 'Invalid message payload' };
     }
 
-    // Sanitize message payload: strip zero-width characters, trim string, discard empty messages, enforce strict 500-character ceiling
+    // Sanitize message payload: strip zero-width characters, trim string, discard empty messages, enforce strict 250-character ceiling
     const cleanZeroWidth = text.replace(/[\u200B-\u200D\uFEFF\u200E\u200F\u202A-\u202E\u2060\u00AD]/g, '');
     const trimmed = cleanZeroWidth.trim();
     if (!trimmed || trimmed.length === 0) {
       return { success: false, error: 'Empty message' };
     }
-    const sanitized = trimmed.length > 500 ? trimmed.slice(0, 500).trim() : trimmed;
-    if (!sanitized || sanitized.length === 0) {
-      return { success: false, error: 'Empty message' };
+    if (trimmed.length > 250) {
+      return { success: false, error: 'Message exceeds maximum length of 250 characters.' };
+    }
+    const sanitized = trimmed;
+
+    // Check severe harmful content interceptor
+    const severeCheck = evaluateSevereHarmfulContent(sanitized);
+    if (severeCheck.isSevere) {
+      this.handleSevereIllegalViolation(senderId, roomId, '', severeCheck.reason, sanitized);
+      return { success: false, error: 'Prohibited illegal content violation' };
+    }
+
+    // Check external contact handshake interceptor (anti-off-platform pivoting)
+    const handshakeCheck = detectExternalContactHandshake(sanitized);
+    if (handshakeCheck.hasHandshake) {
+      return {
+        success: false,
+        error: 'Sharing links, handles, or phone numbers is not permitted in this space.',
+      };
     }
 
     const restriction = db.isUserSuspendedOrBanned(senderId);
@@ -741,6 +757,98 @@ export class Matchmaker {
         promptFriendship: false,
         safetyIntervention: true,
       });
+      this.sendToUser(innocentPartnerId, 'matching:state', { state: 'idle' });
+    }
+  }
+
+  /**
+   * Handle severe prohibited illegal content or threat violation:
+   * 1. Remove offending user from pool/room.
+   * 2. Sever offending user's connection with close code 1008 (Policy Violation).
+   * 3. Notify paired peer cleanly:
+   *    { type: "session_ended", reason: "The connection was terminated due to a safety policy violation." }
+   */
+  handleSevereIllegalViolation(
+    offendingUserId: string,
+    roomId: string,
+    offendingIp: string,
+    reason?: string,
+    offendingText?: string
+  ) {
+    simulator.clearTimer(roomId);
+    const session = this.activeSessions.get(roomId);
+    const offendingUser = db.getUserById(offendingUserId);
+
+    this.leaveMatching(offendingUserId);
+
+    let innocentPartnerId: string | null = null;
+    if (session) {
+      innocentPartnerId = session.user1Id === offendingUserId ? session.user2Id : session.user1Id;
+      session.status = 'ended';
+      this.activeSessions.delete(roomId);
+      this.userToRoom.delete(session.user1Id);
+      this.userToRoom.delete(session.user2Id);
+    }
+
+    // Log moderation flag for human review
+    db.addFlag({
+      userId: offendingUserId,
+      displayName: offendingUser?.displayName || 'Unknown',
+      roomId,
+      triggerCategory: 'severe_illegal_content',
+      flaggedText: offendingText || 'Severe prohibited content violation',
+      severity: 'high',
+    });
+
+    if (offendingUser) {
+      db.applyProgressiveSuspension(
+        offendingUserId,
+        reason || 'Severe safety policy violation: illegal or harmful content',
+        offendingText || 'Prohibited pattern',
+        true
+      );
+    }
+
+    // Sever offending user's socket with close code 1008
+    const client = this.clients.get(offendingUserId);
+    if (client) {
+      try {
+        if (client.ws.readyState === WebSocket.OPEN) {
+          client.ws.close(1008, 'Policy Violation');
+        } else {
+          client.ws.terminate();
+        }
+      } catch (err) {
+        console.error('Error closing violating socket:', err);
+      }
+      this.unregisterClient(offendingUserId, undefined, true);
+    }
+
+    // Notify paired peer cleanly
+    if (innocentPartnerId) {
+      db.updateUser(innocentPartnerId, { status: 'offline' });
+      const peerClient = this.clients.get(innocentPartnerId);
+      if (peerClient && peerClient.ws.readyState === WebSocket.OPEN) {
+        try {
+          // Send exact required payload format
+          peerClient.ws.send(
+            JSON.stringify({
+              type: 'session_ended',
+              event: 'session:ended',
+              roomId,
+              reason: 'The connection was terminated due to a safety policy violation.',
+              data: {
+                roomId,
+                reason: 'The connection was terminated due to a safety policy violation.',
+                safetyIntervention: true,
+                promptFriendship: false,
+              },
+            })
+          );
+        } catch (err) {
+          console.error('Error notifying paired peer:', err);
+        }
+      }
       this.sendToUser(innocentPartnerId, 'matching:state', { state: 'idle' });
     }
   }

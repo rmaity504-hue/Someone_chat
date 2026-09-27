@@ -8,7 +8,7 @@ import { createServer as createViteServer } from 'vite';
 import { apiRouter } from './server/routes.js';
 import { db } from './server/db.js';
 import { matchmaker } from './server/matchmaker.js';
-import { evaluateMessageSafety } from './server/safety.js';
+import { evaluateMessageSafety, detectExternalContactHandshake, evaluateSevereHarmfulContent } from './server/safety.js';
 import { verifySmtpConnection } from './server/email.js';
 import { REQUIRE_EMAIL_VERIFICATION } from './server/config.js';
 import { simulator } from './server/simulator.js';
@@ -88,6 +88,29 @@ async function startServer() {
 
   // Volatile memory map for tracking message timestamps per user (burst rate-limiting)
   const userMessageTimestamps: Map<string, number[]> = new Map();
+  // Strict 1 message per second rate limiter map (userId/socketId -> lastMessageTimestamp)
+  const userLastMessageTime: Map<string, number> = new Map();
+
+  // 1-hour cooldown ban registry for temporary IP / client session hash
+  const cooldownBans: Map<string, { bannedUntil: number; reason: string }> = new Map();
+
+  function isCooldownBanned(key?: string | null): boolean {
+    if (!key) return false;
+    const entry = cooldownBans.get(key);
+    if (!entry) return false;
+    if (Date.now() > entry.bannedUntil) {
+      cooldownBans.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  function addCooldownBan(key?: string | null, reason: string = 'Safety policy violation') {
+    if (!key) return;
+    const bannedUntil = Date.now() + 60 * 60 * 1000; // 1-hour cooldown
+    cooldownBans.set(key, { bannedUntil, reason });
+    console.log(`[SAFETY COOLDOWN BAN] ${key} placed on 1-hour cooldown ban until ${new Date(bannedUntil).toISOString()} (${reason})`);
+  }
 
   // Volatile map tracking queue entry timestamps per IP (max 10 requests per minute per IP to prevent bot exhaustion)
   const wsQueueIpTimestamps: Map<string, number[]> = new Map();
@@ -121,6 +144,16 @@ async function startServer() {
         userMessageTimestamps.delete(uid);
       } else {
         userMessageTimestamps.set(uid, valid);
+      }
+    }
+    for (const [uid, lastTime] of userLastMessageTime.entries()) {
+      if (now - lastTime > 10000) {
+        userLastMessageTime.delete(uid);
+      }
+    }
+    for (const [key, entry] of cooldownBans.entries()) {
+      if (now > entry.bannedUntil) {
+        cooldownBans.delete(key);
       }
     }
   }, 60000);
@@ -174,6 +207,20 @@ async function startServer() {
       ? forwarded[0].trim()
       : req.socket.remoteAddress || '127.0.0.1';
     extWs.clientIp = clientIp;
+
+    // Check if IP is under a 1-hour cooldown ban from safety policy violation
+    if (isCooldownBanned(clientIp)) {
+      ws.send(
+        JSON.stringify({
+          type: 'error',
+          event: 'account:restricted',
+          data: { reason: 'Your access is temporarily suspended due to a safety policy violation.' },
+          message: 'Your access is temporarily suspended due to a safety policy violation.',
+        })
+      );
+      ws.close(1008, 'Policy Violation');
+      return;
+    }
 
     ws.on('pong', () => {
       extWs.isAlive = true;
@@ -288,6 +335,17 @@ async function startServer() {
             break;
 
           case 'matching:enter':
+            if (isCooldownBanned(extWs.clientIp) || isCooldownBanned(currentUserId)) {
+              ws.send(
+                JSON.stringify({
+                  type: 'error',
+                  event: 'matching:error',
+                  data: { message: 'Your access is temporarily suspended due to a safety policy violation. Please try again later.' },
+                  message: 'Your access is temporarily suspended due to a safety policy violation. Please try again later.',
+                })
+              );
+              break;
+            }
             if (!checkWsQueueRateLimit(extWs.clientIp)) {
               ws.send(
                 JSON.stringify({
@@ -326,21 +384,48 @@ async function startServer() {
             if (data?.roomId && typeof data?.text === 'string') {
               // Strip zero-width unicode spaces and invisible overrides
               const cleanZeroWidth = data.text.replace(/[\u200B-\u200D\uFEFF\u200E\u200F\u202A-\u202E\u2060\u00AD]/g, '');
-              // Sanitize message payload: trim strings, discard empty messages, enforce strict 500-character ceiling
+              // Sanitize message payload: trim strings, discard empty messages, enforce strict 250-character ceiling
               const trimmed = cleanZeroWidth.trim();
               if (!trimmed || trimmed.length === 0) return;
-              const text = trimmed.length > 500 ? trimmed.slice(0, 500).trim() : trimmed;
-              if (!text || text.length === 0) return;
 
-              // Burst Rate-Limiting: Track message timestamps per user in volatile memory.
-              // If a user sends >5 messages within 3 seconds, drop message and emit calm warning.
+              // Reject oversized text payloads (>250 characters) to prevent script-driven abuse
+              if (trimmed.length > 250) {
+                ws.send(
+                  JSON.stringify({
+                    type: 'error',
+                    event: 'error',
+                    message: 'Message exceeds maximum length of 250 characters.',
+                    data: { message: 'Message exceeds maximum length of 250 characters.' },
+                  })
+                );
+                return;
+              }
+
+              // Enforce strict message rate limit: maximum 1 message per second
               const nowTime = Date.now();
+              const lastSendTime = userLastMessageTime.get(currentUserId) || 0;
+              if (nowTime - lastSendTime < 1000) {
+                ws.send(
+                  JSON.stringify({
+                    type: 'error',
+                    event: 'error',
+                    message: 'Please slow down. Maximum 1 message per second.',
+                    data: { message: 'Please slow down. Maximum 1 message per second.' },
+                  })
+                );
+                return;
+              }
+              userLastMessageTime.set(currentUserId, nowTime);
+
+              // Burst Rate-Limiting: Track message timestamps per user in volatile memory (drop if >5 messages within 3 seconds)
               const userTimestamps = (userMessageTimestamps.get(currentUserId) || []).filter((t) => nowTime - t < 3000);
               if (userTimestamps.length >= 5) {
                 ws.send(
                   JSON.stringify({
+                    type: 'error',
                     event: 'chat:warning',
                     data: { message: 'Take a breath. Please slow down (max 5 messages per 3s).' },
+                    message: 'Take a breath. Please slow down (max 5 messages per 3s).',
                   })
                 );
                 return;
@@ -352,8 +437,10 @@ async function startServer() {
               if (!matchmaker.isUserInRoom(currentUserId, data.roomId)) {
                 ws.send(
                   JSON.stringify({
+                    type: 'error',
                     event: 'chat:error',
                     data: { message: 'Unauthorized: not a participant in this conversation.' },
+                    message: 'Unauthorized: not a participant in this conversation.',
                   })
                 );
                 return;
@@ -364,28 +451,59 @@ async function startServer() {
               if (senderCheck.isRestricted) {
                 ws.send(
                   JSON.stringify({
+                    type: 'error',
                     event: 'chat:blocked',
                     data: {
                       message: senderCheck.reason || 'Your account is currently suspended.',
                     },
+                    message: senderCheck.reason || 'Your account is currently suspended.',
                   })
                 );
                 return;
               }
 
-              // Server-side safety assessment
-              const safety = evaluateMessageSafety(text);
+              // 1. SEVERE THREAT & ILLEGAL HARMFUL CONTENT INTERCEPTOR
+              // Server-side regex filter detecting explicit terms associated with weapons trafficking,
+              // illicit contraband transactions, terrorism, and severe exploitation.
+              const severeCheck = evaluateSevereHarmfulContent(trimmed);
+              if (severeCheck.isSevere) {
+                console.warn(`[SEVERE ILLEGAL THREAT INTERCEPTED] IP: ${extWs.clientIp}, User: ${currentUserId}, Cat: ${severeCheck.category}`);
+                // 1. DO NOT relay message
+                // 2. Place offending temporary IP/client session hash on a 1-hour cooldown ban
+                addCooldownBan(extWs.clientIp, severeCheck.reason || 'Severe safety violation');
+                addCooldownBan(currentUserId, severeCheck.reason || 'Severe safety violation');
+
+                // 3. Cleanly notify paired peer: { type: "session_ended", reason: "The connection was terminated due to a safety policy violation." }
+                matchmaker.handleSevereIllegalViolation(currentUserId, data.roomId, extWs.clientIp, severeCheck.reason, trimmed);
+
+                // 4. Immediately sever offending user's WebSocket connection with close code 1008 (Policy Violation)
+                try {
+                  ws.close(1008, 'Policy Violation');
+                } catch {
+                  // ignore
+                }
+                return;
+              }
+
+              // 2. REJECT EXTERNAL CONTACT HANDSHAKES (ANTI-OFF-PLATFORM PIVOTING)
+              // Rejects messages containing external links/URLs, phone numbers, or social handles/invites
+              const handshakeCheck = detectExternalContactHandshake(trimmed);
+              if (handshakeCheck.hasHandshake) {
+                // Quiet system warning to sender ONLY and DO NOT relay message to peer
+                ws.send(
+                  JSON.stringify({
+                    type: 'error',
+                    message: 'Sharing links, handles, or phone numbers is not permitted in this space.',
+                  })
+                );
+                return;
+              }
+
+              // 3. Server-side safety assessment for sexual behaviour & predatory grooming
+              const safety = evaluateMessageSafety(trimmed);
 
               if (safety.isViolating && safety.isSeriousSexualViolation) {
-                // Immediate enforcement for clear serious violations:
-                // 1. Prevent offending message from being delivered
-                // 2. Immediately terminate current conversation
-                // 3. Remove offending user from matching pool
-                // 4. Suspend offending account for 30 days (progressive)
-                // 5. Store private moderation record
-                // 6. Inform offending user
-                // 7. Do not reveal identity of innocent participant
-                matchmaker.handleSafetyViolation(currentUserId, data.roomId, safety, text);
+                matchmaker.handleSafetyViolation(currentUserId, data.roomId, safety, trimmed);
                 return;
               }
 
@@ -397,17 +515,17 @@ async function startServer() {
                   displayName: user ? user.displayName : 'Unknown',
                   roomId: data.roomId,
                   triggerCategory: safety.category || 'violation',
-                  flaggedText: text,
+                  flaggedText: trimmed,
                   severity: safety.severity === 'severe' || safety.severity === 'high' ? 'high' : 'medium',
                 });
 
                 if (safety.severity === 'severe' || safety.severity === 'high') {
-                  matchmaker.handleSafetyViolation(currentUserId, data.roomId, safety, text);
+                  matchmaker.handleSafetyViolation(currentUserId, data.roomId, safety, trimmed);
                   return;
                 }
               }
 
-              matchmaker.sendMessage(currentUserId, data.roomId, text);
+              matchmaker.sendMessage(currentUserId, data.roomId, trimmed);
             }
             break;
 
@@ -420,6 +538,17 @@ async function startServer() {
 
           case 'chat:next':
           case 'chat:skip':
+            if (isCooldownBanned(extWs.clientIp) || isCooldownBanned(currentUserId)) {
+              ws.send(
+                JSON.stringify({
+                  type: 'error',
+                  event: 'chat:warning',
+                  data: { message: 'Your access is temporarily suspended due to a safety policy violation. Please try again later.' },
+                  message: 'Your access is temporarily suspended due to a safety policy violation. Please try again later.',
+                })
+              );
+              break;
+            }
             if (!checkWsQueueRateLimit(extWs.clientIp)) {
               ws.send(
                 JSON.stringify({

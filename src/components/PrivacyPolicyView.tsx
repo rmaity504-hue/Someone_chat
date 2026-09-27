@@ -145,6 +145,15 @@ export const PrivacyPolicyView: React.FC<PrivacyPolicyViewProps> = ({ onBackToHo
               Conversations conclude cleanly when either person steps away. Mutual friendship or contact exchange only occurs if both participants explicitly and independently tap &quot;Keep Connection&quot; at the conclusion of a session.
             </p>
           </div>
+
+          <div className="space-y-2">
+            <h3 className="font-serif text-lg font-medium text-[#2D2723]">
+              5. Statutory Legal Compliance & Zero-Tolerance Abuse Protocol
+            </h3>
+            <p>
+              The platform does not log chat history. In cases of severe violations, automated filters sever connections immediately. The platform complies with lawful requests and statutory obligations under applicable information technology laws.
+            </p>
+          </div>
         </section>
 
         {/* Bottom Call to Action */}
